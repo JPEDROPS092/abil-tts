@@ -99,6 +99,18 @@ The file `output.wav` will be created in the current directory.
 - The web UI loads the model in the background and reports readiness.
 - On CPU, loading can be slower. Adjust the device in the UI if needed.
 
+## Sample audio (inline player)
+
+<audio controls>
+	<source src="output.wav" type="audio/wav" />
+	Your browser does not support the audio element.
+</audio>
+
+<audio controls>
+	<source src="outputs/b8782662fc6943328b834853701f208a.wav" type="audio/wav" />
+	Your browser does not support the audio element.
+</audio>
+
 ## Backend configuration
 
 ### Qwen3-TTS
