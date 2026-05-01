@@ -1,0 +1,19 @@
+# Core TTS
+qwen-tts
+torch==2.11.0
+triton==3.6.0
+piper-tts
+onnxruntime-gpu
+TTS
+soundfile
+numpy
+
+# Document formats
+python-docx
+pymupdf       # PDF support (import as fitz)
+
+# Web UI
+flask
+
+# Optional: desktop audio playback (Linux)
+# python-vlc
