@@ -5,7 +5,9 @@ Handles model loading, text chunking, and audio generation.
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import threading
 
 import numpy as np
@@ -14,17 +16,44 @@ import torch
 
 MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 
+# Speakers actually supported by Qwen3-TTS CustomVoice.
+# Each entry's native language is listed in SPEAKER_NATIVE_LANGUAGE for reference.
 SPEAKERS = [
-    "Ryan", "Alice", "Bob", "Charlie", "Diana",
-    "Ethan", "Fiona", "George", "Hannah", "Ivan",
-    "Julia", "Kevin", "Laura", "Mike", "Nina",
-    "Oscar", "Penny", "Quinn", "Rachel", "Sam",
+    "Ryan",      # English (default)
+    "Aiden",     # English
+    "Vivian",    # Chinese
+    "Serena",    # Chinese
+    "Uncle_Fu",  # Chinese
+    "Dylan",     # Chinese (Beijing dialect)
+    "Eric",      # Chinese (Sichuan dialect)
+    "Ono_Anna",  # Japanese
+    "Sohee",     # Korean
 ]
 
+SPEAKER_NATIVE_LANGUAGE = {
+    "Ryan": "English",
+    "Aiden": "English",
+    "Vivian": "Chinese",
+    "Serena": "Chinese",
+    "Uncle_Fu": "Chinese",
+    "Dylan": "Chinese",
+    "Eric": "Chinese",
+    "Ono_Anna": "Japanese",
+    "Sohee": "Korean",
+}
+
+# Languages supported by Qwen3-TTS (10 total).
 LANGUAGES = [
-    "English", "Chinese", "Japanese", "Korean",
-    "French", "German", "Spanish", "Portuguese",
-    "Italian", "Russian", "Arabic", "Hindi",
+    "English",
+    "Chinese",
+    "Japanese",
+    "Korean",
+    "German",
+    "French",
+    "Russian",
+    "Portuguese",
+    "Spanish",
+    "Italian",
 ]
 
 BACKENDS = {
@@ -58,7 +87,12 @@ class QwenBackend(BaseBackend):
         self.sample_rate = 24000
 
     def load_model(self, device: str = "cuda:0", progress_cb=None):
-        from qwen_tts import Qwen3TTSModel
+        try:
+            from qwen_tts import Qwen3TTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "qwen-tts not installed. Install it with: pip install qwen-tts"
+            ) from exc
         if progress_cb:
             progress_cb("Loading model...", 0)
         dtype = torch.bfloat16 if "cuda" in device else torch.float32
@@ -106,6 +140,32 @@ class QwenBackend(BaseBackend):
         return chunks or [text]
 
     def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+        # Validate against what the model actually supports — fall back gracefully.
+        if speaker not in SPEAKERS:
+            print(f"[QwenBackend] Unknown speaker '{speaker}', falling back to 'Ryan'.")
+            speaker = "Ryan"
+        if language not in LANGUAGES:
+            print(f"[QwenBackend] Unknown language '{language}', falling back to 'English'.")
+            language = "English"
+
+        # Cross-check with the model's own runtime-reported lists, when available.
+        try:
+            supported_speakers = self.model.get_supported_speakers()
+            if supported_speakers and speaker not in supported_speakers:
+                print(f"[QwenBackend] Speaker '{speaker}' not in model list {supported_speakers}; using first available.")
+                speaker = supported_speakers[0]
+        except Exception:
+            pass
+        try:
+            supported_langs = self.model.get_supported_languages()
+            if supported_langs and language not in supported_langs:
+                print(f"[QwenBackend] Language '{language}' not in model list {supported_langs}; using 'English'.")
+                language = "English" if "English" in supported_langs else supported_langs[0]
+        except Exception:
+            pass
+
+        print(f"[QwenBackend] generate(language={language!r}, speaker={speaker!r}, chars={len(text)})")
+
         chunks = self._chunk_text(text)
         n = len(chunks)
         all_wavs: list[np.ndarray] = []
@@ -137,13 +197,35 @@ class PiperBackend(BaseBackend):
         self.model_path = None
         self.config_path = None
         self.use_cuda = False
+        self._invoke: list[str] = []
 
     def load_model(self, device: str = "cuda:0", progress_cb=None):
         if progress_cb:
             progress_cb("Loading model...", 0)
+
+        # Resolve how to invoke piper: prefer the standalone CLI if present,
+        # otherwise fall back to `python -m piper` (piper-tts python package).
+        piper_bin = shutil.which("piper")
+        if piper_bin:
+            self._invoke = [piper_bin]
+        else:
+            try:
+                import piper  # noqa: F401
+                self._invoke = [sys.executable, "-m", "piper"]
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Piper not found. Install it with: pip install piper-tts "
+                    "or download a binary from https://github.com/rhasspy/piper/releases."
+                ) from exc
+
         model_path = os.getenv("PIPER_MODEL")
         if not model_path:
-            raise ValueError("PIPER_MODEL is not set. Provide a Piper .onnx model path.")
+            raise RuntimeError(
+                "PIPER_MODEL environment variable not set. Point it to a Piper .onnx "
+                "voice model, e.g. export PIPER_MODEL=/path/to/voice.onnx"
+            )
+        if not os.path.exists(model_path):
+            raise RuntimeError(f"PIPER_MODEL file does not exist: {model_path}")
         config_path = os.getenv("PIPER_CONFIG")
         if not config_path:
             candidate = f"{model_path}.json"
@@ -162,15 +244,26 @@ class PiperBackend(BaseBackend):
     def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
         if progress_cb:
             progress_cb("Generating...", 40)
-        cmd = ["piper", "--model", self.model_path, "--output_file", output_path]
+        cmd = list(self._invoke) + ["-m", self.model_path, "-f", output_path]
         if self.config_path:
-            cmd += ["--config", self.config_path]
+            cmd += ["-c", self.config_path]
         if self.use_cuda:
-            cmd += ["--use_cuda"]
+            cmd += ["--cuda"]
         extra_args = os.getenv("PIPER_ARGS", "").strip()
         if extra_args:
             cmd += shlex.split(extra_args)
-        subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+
+        try:
+            subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            raise RuntimeError(f"Piper failed: {stderr.strip() or exc}") from exc
+
         if progress_cb:
             progress_cb("Done.", 100)
         return output_path, 0
@@ -183,7 +276,13 @@ class CoquiBackend(BaseBackend):
         self.tts = None
 
     def load_model(self, device: str = "cuda:0", progress_cb=None):
-        from TTS.api import TTS as CoquiTTS
+        try:
+            from TTS.api import TTS as CoquiTTS
+        except ImportError as exc:
+            raise RuntimeError(
+                "Coqui TTS not installed. Install it with: pip install 'coqui-tts[codec]' "
+                "(maintained Idiap fork; works on Python 3.10–3.14)."
+            ) from exc
         if progress_cb:
             progress_cb("Loading model...", 0)
         model_name = os.getenv("COQUI_MODEL", "tts_models/en/ljspeech/tacotron2-DDC")
@@ -258,13 +357,24 @@ class TTSEngine:
         backend: str | None = None,
         device: str = DEFAULT_DEVICE,
         progress_cb=None,
+        normalize_text: bool = True,
     ) -> tuple[str, int]:
         """Generate speech and write to *output_path*.
 
         *progress_cb(message, pct)* is called with status updates.
+        When *normalize_text* is True (default) the input is reflowed and
+        numbers/dates/currencies/abbreviations are expanded for the given
+        language before being sent to the backend.
         Returns *(output_path, sample_rate)*.
         """
         name = self._normalize_backend(backend)
+        if normalize_text:
+            try:
+                from text_normalizer import normalize as _normalize
+                text = _normalize(text, language=language)
+            except Exception as exc:  # never let normalization break generation
+                print(f"[TTSEngine] text normalization skipped: {exc}")
+
         with self._gen_lock:
             if not self._backends[name].is_loaded():
                 self._backends[name].load_model(device=device, progress_cb=progress_cb)

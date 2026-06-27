@@ -1,4 +1,8 @@
-# Qween TTS
+# Abil TTS
+
+<p align="center">
+  <img src="static/abil.png" alt="Abil TTS mascot" width="220" />
+</p>
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-web-000000?style=for-the-badge&logo=flask&logoColor=white)](https://flask.palletsprojects.com/)

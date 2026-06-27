@@ -1,5 +1,5 @@
 """
-Qween TTS – Tkinter desktop application.
+Abil TTS – Tkinter desktop application.
 Run: python gui.py
 """
 import os
@@ -32,13 +32,24 @@ FT = ("Sans", 12, "bold")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-class QweenApp(tk.Tk):
+class AbilApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Qween TTS")
+        self.title("Abil TTS")
         self.geometry("1040x700")
         self.minsize(720, 480)
         self.configure(bg=BG)
+
+        # App icon
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "static", "abil.png")
+            if not os.path.exists(icon_path):
+                icon_path = os.path.join(os.path.dirname(__file__), "ABIL.png")
+            if os.path.exists(icon_path):
+                self._icon_img = tk.PhotoImage(file=icon_path)
+                self.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
 
         self.engine = TTSEngine.get_instance()
         self.output_path = os.path.join(os.getcwd(), "output.wav")
@@ -103,7 +114,7 @@ class QweenApp(tk.Tk):
         bar.grid(row=0, column=0, sticky="ew")
         bar.columnconfigure(3, weight=1)
 
-        ttk.Label(bar, text="⬛ Qween TTS", style="SurfTitle.TLabel").grid(
+        ttk.Label(bar, text="⬛ Abil TTS", style="SurfTitle.TLabel").grid(
             row=0, column=0, padx=16, pady=10)
 
         ttk.Button(bar, text="Open Document…", command=self._open_file).grid(
@@ -163,24 +174,31 @@ class QweenApp(tk.Tk):
         ttk.Separator(p).grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         ttk.Label(p, text="Backend", style="SurfSub.TLabel").grid(row=2, column=0, **g)
-        self.backend_var = tk.StringVar(value=DEFAULT_BACKEND)
+        # Store mapping friendly-name ↔ key
+        self._backend_names = list(BACKENDS.values())   # ["Qwen3-TTS", "Piper TTS", "Coqui TTS"]
+        self._backend_key_map = {v: k for k, v in BACKENDS.items()}
+        self.backend_var = tk.StringVar(value=BACKENDS.get(DEFAULT_BACKEND, self._backend_names[0]))
         ttk.Combobox(
             p,
             textvariable=self.backend_var,
-            values=list(BACKENDS.keys()),
+            values=self._backend_names,
             state="readonly",
         ).grid(row=3, column=0, **g)
         self.backend_var.trace_add("write", lambda *_: self._on_backend_change())
 
-        ttk.Label(p, text="Speaker", style="SurfSub.TLabel").grid(row=4, column=0, **g)
+        self._lbl_speaker = ttk.Label(p, text="Speaker", style="SurfSub.TLabel")
+        self._lbl_speaker.grid(row=4, column=0, **g)
         self.speaker_var = tk.StringVar(value="Ryan")
-        ttk.Combobox(p, textvariable=self.speaker_var,
-                     values=SPEAKERS, state="readonly").grid(row=5, column=0, **g)
+        self._cmb_speaker = ttk.Combobox(p, textvariable=self.speaker_var,
+                                          values=SPEAKERS, state="readonly")
+        self._cmb_speaker.grid(row=5, column=0, **g)
 
-        ttk.Label(p, text="Language", style="SurfSub.TLabel").grid(row=6, column=0, **g)
+        self._lbl_lang = ttk.Label(p, text="Language", style="SurfSub.TLabel")
+        self._lbl_lang.grid(row=6, column=0, **g)
         self.lang_var = tk.StringVar(value="English")
-        ttk.Combobox(p, textvariable=self.lang_var,
-                     values=LANGUAGES, state="readonly").grid(row=7, column=0, **g)
+        self._cmb_lang = ttk.Combobox(p, textvariable=self.lang_var,
+                                       values=LANGUAGES, state="readonly")
+        self._cmb_lang.grid(row=7, column=0, **g)
 
         ttk.Separator(p).grid(row=8, column=0, sticky="ew", padx=16, pady=12)
 
@@ -210,6 +228,9 @@ class QweenApp(tk.Tk):
                                          style="SurfSub.TLabel")
         self.model_indicator.grid(row=15, column=0, padx=16, pady=(0, 12), sticky="w")
 
+        # Apply initial visibility based on default backend
+        self.after_idle(self._refresh_voice_settings)
+
     def _build_statusbar(self):
         bar = ttk.Frame(self, style="Surface.TFrame")
         bar.grid(row=2, column=0, sticky="ew")
@@ -232,7 +253,7 @@ class QweenApp(tk.Tk):
         def _run():
             try:
                 self.engine.load_model(
-                    backend=self.backend_var.get(),
+                    backend=self._get_backend_key(),
                     device=self.device_var.get(),
                     progress_cb=lambda m, _p=None: self.after(0, lambda m=m: self._set_status(m)),
                 )
@@ -248,7 +269,33 @@ class QweenApp(tk.Tk):
         self._set_status("Ready")
         self.model_indicator.configure(text="● Model ready", foreground=GREEN)
 
+    def _get_backend_key(self) -> str:
+        """Return the internal key ('qwen', 'piper', 'coqui') for the selected backend."""
+        return self._backend_key_map.get(self.backend_var.get(), DEFAULT_BACKEND)
+
+    def _refresh_voice_settings(self):
+        """Show or hide Speaker / Language rows depending on the active backend."""
+        key = self._get_backend_key()
+        if key == "qwen":
+            self._cmb_speaker.configure(values=SPEAKERS)
+            if self.speaker_var.get() not in SPEAKERS:
+                self.speaker_var.set(SPEAKERS[0])
+            self._cmb_lang.configure(values=LANGUAGES)
+            if self.lang_var.get() not in LANGUAGES:
+                self.lang_var.set("English")
+            self._lbl_speaker.grid()
+            self._cmb_speaker.grid()
+            self._lbl_lang.grid()
+            self._cmb_lang.grid()
+        else:
+            # Piper and Coqui: voice / language are determined by the loaded model
+            self._lbl_speaker.grid_remove()
+            self._cmb_speaker.grid_remove()
+            self._lbl_lang.grid_remove()
+            self._cmb_lang.grid_remove()
+
     def _on_backend_change(self):
+        self._refresh_voice_settings()
         self.gen_btn.config(state="disabled")
         self.play_btn.config(state="disabled")
         self.save_btn.config(state="disabled")
@@ -326,7 +373,7 @@ class QweenApp(tk.Tk):
                     language=self.lang_var.get(),
                     speaker=self.speaker_var.get(),
                     output_path=self.output_path,
-                    backend=self.backend_var.get(),
+                    backend=self._get_backend_key(),
                     device=self.device_var.get(),
                     progress_cb=lambda m, _p=None: self.after(0, lambda m=m: self._set_status(m)),
                 )
@@ -372,7 +419,7 @@ class QweenApp(tk.Tk):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    app = QweenApp()
+    app = AbilApp()
     app.mainloop()
 
 

@@ -4,7 +4,10 @@ torch==2.11.0
 triton==3.6.0
 piper-tts
 onnxruntime-gpu
-TTS
+# Coqui TTS (Idiap-maintained fork; the original `TTS` package is unmaintained and
+# only supports Python <=3.11). `coqui-tts` keeps the same `from TTS.api import TTS`
+# import path. Requires Python 3.10–3.12.
+coqui-tts
 soundfile
 numpy
 

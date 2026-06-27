@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Qween TTS</title>
+  <title>Abil TTS</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='abil.png') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='abil.png') }}" />
   <style>
     /* ── Catppuccin Mocha ─────────────────────────────────────────────── */
     :root {
@@ -32,8 +34,6 @@
       background: var(--bg);
       color: var(--text);
       height: 100vh;
-      display: flex;
-      flex-direction: column;
       overflow: hidden;
     }
 
@@ -49,6 +49,17 @@
       flex-shrink: 0;
     }
     .logo { color: var(--blue); font-size: 18px; font-weight: 700; }
+    .logo-icon {
+      width: 28px; height: 28px;
+      object-fit: contain;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+    .brand-icon {
+      width: 72px; height: 72px;
+      object-fit: contain;
+      border-radius: 12px;
+    }
     .model-badge {
       display: flex; align-items: center; gap: 6px;
       font-size: 12px; color: var(--sub);
@@ -60,6 +71,7 @@
       transition: background .4s;
     }
     .dot.ready { background: var(--green); }
+    .dot.error { background: var(--red); }
 
     /* ── Main layout ─────────────────────────────────────────────────────── */
     main {
@@ -222,15 +234,112 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: var(--mantle); }
     ::-webkit-scrollbar-thumb { background: var(--overlay); border-radius: 3px; }
+
+    /* Checkbox row */
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--sub);
+      cursor: pointer;
+      user-select: none;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px; height: 16px;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+
+    /* ── Loading overlay ──────────────────────────────────────────────── */
+    #app { display: none; flex-direction: column; height: 100vh; }
+    #app.ready { display: flex; }
+
+    #loading-screen {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 22px;
+      z-index: 9999;
+      transition: opacity .4s ease;
+    }
+    #loading-screen.hidden { opacity: 0; pointer-events: none; }
+
+    #loading-screen .brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--blue);
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+
+    .spinner {
+      width: 56px; height: 56px;
+      border: 4px solid var(--overlay);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #loading-msg {
+      color: var(--sub);
+      font-size: 14px;
+      text-align: center;
+      max-width: 460px;
+      line-height: 1.5;
+    }
+    #loading-sub {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .loading-dots::after {
+      content: '';
+      display: inline-block;
+      width: 1em;
+      text-align: left;
+      animation: dots 1.4s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
   </style>
 </head>
 <body>
 
+<!-- ── Loading screen ────────────────────────────────────────────── -->
+<div id="loading-screen">
+  <div class="brand">
+    <img src="{{ url_for('static', filename='abil.png') }}" alt="Abil" class="brand-icon" />
+    Abil TTS
+  </div>
+  <div class="spinner"></div>
+  <div id="loading-msg">
+    <span id="loading-text">Carregando modelo</span><span class="loading-dots"></span>
+  </div>
+  <div id="loading-sub">
+    Isso pode levar alguns minutos no primeiro uso enquanto o modelo é baixado.
+  </div>
+</div>
+
+<div id="app">
+
 <header>
-  <span class="logo">⬛ Qween TTS</span>
+  <img src="{{ url_for('static', filename='abil.png') }}" alt="Abil" class="logo-icon" />
+  <span class="logo">Abil TTS</span>
   <div class="model-badge">
     <div class="dot" id="model-dot"></div>
-    <span id="model-status">Loading model…</span>
+    <span id="model-status">Model ready</span>
   </div>
 </header>
 
@@ -317,10 +426,17 @@
     <hr />
 
     <div class="panel-title">Quick Actions</div>
+    <label class="checkbox-row" title="Re-flow paragraphs and expand numbers / dates / abbreviations for the selected language before TTS.">
+      <input type="checkbox" id="normalize-toggle" checked />
+      <span>Normalize text for TTS</span>
+    </label>
+    <button class="btn btn-default" id="preview-btn">🔍&nbsp; Preview normalized text</button>
     <button class="btn btn-default" id="paste-btn">📋&nbsp; Paste Clipboard</button>
     <button class="btn btn-danger"  id="clear-btn">🗑&nbsp; Clear Text</button>
   </aside>
 </main>
+
+</div><!-- /#app -->
 
 <!-- Toast notification -->
 <div id="toast"></div>
@@ -414,36 +530,142 @@
     hideAudio();
   });
 
+  // ── Normalize preview ────────────────────────────────────────────────────
+  const normalizeToggle = document.getElementById('normalize-toggle');
+  document.getElementById('preview-btn').addEventListener('click', async () => {
+    const text = textInput.value;
+    if (!text.trim()) { showToast('Type some text first', true); return; }
+    try {
+      const res = await fetch('/api/normalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          language: document.getElementById('lang-select').value,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      textInput.value = data.text;
+      updateCount();
+      showToast('Text normalized — review before generating');
+    } catch (err) {
+      showToast(err.message || 'Normalize failed', true);
+    }
+  });
+
   // ── Model status polling ──────────────────────────────────────────────────
-  function resetModelStatus() {
-    modelDot.classList.remove('ready');
-    modelStatus.textContent = 'Loading model…';
-    genBtn.disabled = true;
+  const loadingScreen = document.getElementById('loading-screen');
+  const loadingText   = document.getElementById('loading-text');
+  const appRoot       = document.getElementById('app');
+
+  function showLoadingScreen(msg) {
+    if (msg) loadingText.textContent = msg;
+    loadingScreen.style.display = '';
+    loadingScreen.classList.remove('hidden');
+    appRoot.classList.remove('ready');
   }
 
-  async function pollModel() {
+  function hideLoadingScreen() {
+    appRoot.classList.add('ready');
+    loadingScreen.classList.add('hidden');
+    setTimeout(() => { loadingScreen.style.display = 'none'; }, 450);
+  }
+
+  function currentBackendLabel() {
+    return backendSelect.options[backendSelect.selectedIndex].text;
+  }
+
+  function setHeaderStatus(status, message) {
+    // status: 'idle' | 'loading' | 'ready' | 'error'
+    modelDot.classList.remove('ready', 'error');
+    if (status === 'ready') {
+      modelDot.classList.add('ready');
+      modelStatus.textContent = `Model ready (${currentBackendLabel()})`;
+    } else if (status === 'error') {
+      modelDot.classList.add('error');
+      modelStatus.textContent = `Error: ${message || 'unknown'}`;
+    } else if (status === 'loading') {
+      modelStatus.textContent = `Loading ${currentBackendLabel()}…`;
+    } else {
+      modelStatus.textContent = 'Idle';
+    }
+  }
+
+  // Cancels in-flight polls when backend/device changes
+  let pollToken = 0;
+
+  async function ensureLoaded() {
+    // Tell the server to start loading the currently selected backend
+    try {
+      await fetch('/api/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          backend: backendSelect.value,
+          device: deviceSelect.value,
+        }),
+      });
+    } catch (e) {
+      // network error — polling will retry status anyway
+    }
+  }
+
+  async function pollModel(token) {
+    if (token !== pollToken) return; // stale poll, abort
     try {
       const res = await fetch(`/api/status?backend=${encodeURIComponent(backendSelect.value)}`);
       const data = await res.json();
-      if (data.model_ready) {
-        modelDot.classList.add('ready');
-        modelStatus.textContent = 'Model ready';
+      if (token !== pollToken) return;
+
+      if (data.model_ready || data.status === 'ready') {
+        setHeaderStatus('ready');
         genBtn.disabled = false;
+        hideLoadingScreen();
+      } else if (data.status === 'error') {
+        setHeaderStatus('error', data.message);
+        genBtn.disabled = true;
+        // Show error in the loading screen overlay
+        loadingText.textContent = `Falha ao carregar ${currentBackendLabel()}`;
+        const sub = document.getElementById('loading-sub');
+        if (sub) sub.textContent = data.message || 'Erro desconhecido';
+        // Hide spinner on error
+        const spinner = document.querySelector('#loading-screen .spinner');
+        if (spinner) spinner.style.display = 'none';
+        showToast(`Erro ao carregar ${currentBackendLabel()}: ${data.message}`, true);
       } else {
-        setTimeout(pollModel, 2000);
+        // loading or idle
+        setHeaderStatus('loading');
+        showLoadingScreen(`Carregando ${currentBackendLabel()}…`);
+        const spinner = document.querySelector('#loading-screen .spinner');
+        if (spinner) spinner.style.display = '';
+        const sub = document.getElementById('loading-sub');
+        if (sub) sub.textContent = 'Isso pode levar alguns minutos no primeiro uso enquanto o modelo é baixado.';
+        setTimeout(() => pollModel(token), 1500);
       }
     } catch {
-      setTimeout(pollModel, 3000);
+      setTimeout(() => pollModel(token), 3000);
     }
   }
-  pollModel();
+
+  function startPollingForCurrentBackend() {
+    pollToken += 1;
+    const myToken = pollToken;
+    setHeaderStatus('loading');
+    showLoadingScreen(`Carregando ${currentBackendLabel()}…`);
+    genBtn.disabled = true;
+    ensureLoaded().finally(() => pollModel(myToken));
+  }
+
+  // Initial boot
+  loadingText.textContent = `Carregando ${currentBackendLabel()}…`;
+  startPollingForCurrentBackend();
 
   backendSelect.addEventListener('change', () => {
-    resetModelStatus();
-    pollModel();
+    startPollingForCurrentBackend();
   });
   deviceSelect.addEventListener('change', () => {
-    resetModelStatus();
+    startPollingForCurrentBackend();
   });
 
   // ── Generate ──────────────────────────────────────────────────────────────
@@ -463,6 +685,7 @@
       device: deviceSelect.value,
       speaker: document.getElementById('speaker-select').value,
       language: document.getElementById('lang-select').value,
+      normalize_text: normalizeToggle.checked,
     };
 
     try {
