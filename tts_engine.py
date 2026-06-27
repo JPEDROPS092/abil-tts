@@ -17,6 +17,13 @@ import torch
 from text_processor import TextProcessor
 
 MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+PIPER_DEFAULT_MODEL = os.path.join(
+    PROJECT_DIR,
+    "models",
+    "piper",
+    "pt_BR-faber-medium.onnx",
+)
 
 # Speakers actually supported by Qwen3-TTS CustomVoice.
 # Each entry's native language is listed in SPEAKER_NATIVE_LANGUAGE for reference.
@@ -126,6 +133,21 @@ DEFAULT_BACKEND = _auto_backend_for_device()
 DEFAULT_DEVICE = os.getenv("TTS_DEVICE", "cuda:0").strip()
 
 
+def _is_cuda_device(device: str) -> bool:
+    return (device or "").strip().lower().startswith("cuda")
+
+
+def _require_torch_cuda(device: str, backend: str) -> None:
+    if not _is_cuda_device(device):
+        return
+    if torch.cuda.is_available():
+        return
+    raise RuntimeError(
+        f"{backend} was requested with device={device}, but PyTorch cannot see a CUDA GPU. "
+        "Check nvidia-smi/driver installation or select device=cpu."
+    )
+
+
 class BaseBackend:
     name = "base"
 
@@ -155,7 +177,8 @@ class QwenBackend(BaseBackend):
             ) from exc
         if progress_cb:
             progress_cb("Loading model...", 0)
-        dtype = torch.bfloat16 if "cuda" in device else torch.float32
+        _require_torch_cuda(device, "Qwen")
+        dtype = torch.bfloat16 if _is_cuda_device(device) else torch.float32
         self.model = Qwen3TTSModel.from_pretrained(
             MODEL_ID,
             device_map=device,
@@ -303,11 +326,14 @@ class PiperBackend(BaseBackend):
                     "or download a binary from https://github.com/rhasspy/piper/releases."
                 ) from exc
 
-        model_path = os.getenv("PIPER_MODEL")
+        model_path = os.getenv("PIPER_MODEL") or (
+            PIPER_DEFAULT_MODEL if os.path.exists(PIPER_DEFAULT_MODEL) else None
+        )
         if not model_path:
             raise RuntimeError(
                 "PIPER_MODEL environment variable not set. Point it to a Piper .onnx "
-                "voice model, e.g. export PIPER_MODEL=/path/to/voice.onnx"
+                "voice model, e.g. export PIPER_MODEL=/path/to/voice.onnx, "
+                "or run: python scripts/ensure_models.py --piper"
             )
         if not os.path.exists(model_path):
             raise RuntimeError(f"PIPER_MODEL file does not exist: {model_path}")
@@ -318,7 +344,22 @@ class PiperBackend(BaseBackend):
                 config_path = candidate
         self.model_path = model_path
         self.config_path = config_path
-        self.use_cuda = device.startswith("cuda")
+        self.use_cuda = _is_cuda_device(device)
+        if self.use_cuda:
+            try:
+                import onnxruntime as ort
+                providers = set(ort.get_available_providers())
+            except Exception as exc:
+                raise RuntimeError(
+                    "Piper CUDA was requested, but onnxruntime is not available. "
+                    "Install onnxruntime-gpu or select device=cpu."
+                ) from exc
+            if "CUDAExecutionProvider" not in providers:
+                raise RuntimeError(
+                    "Piper CUDA was requested, but ONNX Runtime does not expose "
+                    "CUDAExecutionProvider. Install/configure onnxruntime-gpu, CUDA, "
+                    "and the NVIDIA driver, or select device=cpu."
+                )
         self._loaded = True
         if progress_cb:
             progress_cb("Model ready.", 100)
@@ -371,7 +412,8 @@ class CoquiBackend(BaseBackend):
         if progress_cb:
             progress_cb("Loading model...", 0)
         model_name = os.getenv("COQUI_MODEL", "tts_models/en/ljspeech/tacotron2-DDC")
-        use_cuda = device.startswith("cuda")
+        _require_torch_cuda(device, "Coqui")
+        use_cuda = _is_cuda_device(device)
         self.tts = CoquiTTS(model_name=model_name, gpu=use_cuda)
         if progress_cb:
             progress_cb("Model ready.", 100)

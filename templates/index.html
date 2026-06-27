@@ -728,10 +728,8 @@
   startPollingForCurrentBackend();
 
   backendSelect.addEventListener('change', () => {
-    startPollingForCurrentBackend();
     updateSpeakerChoices();
-    resetModelStatus();
-    pollModel();
+    startPollingForCurrentBackend();
   });
   deviceSelect.addEventListener('change', () => {
     startPollingForCurrentBackend();

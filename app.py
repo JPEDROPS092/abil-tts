@@ -105,26 +105,13 @@ def favicon():
 @app.route("/api/status")
 def api_status():
     backend = (request.args.get("backend") or DEFAULT_BACKEND).strip().lower()
-    device = (request.args.get("device") or DEFAULT_DEVICE).strip()
-    ready = engine.is_loaded(backend=backend)
-    if not ready:
-        key = (backend, device)
-        with _loading_lock:
-            if key not in _loading_backends:
-                _loading_backends.add(key)
-
-                def _load():
-                    try:
-                        engine.load_model(backend=backend, device=device)
-                    finally:
-                        with _loading_lock:
-                            _loading_backends.discard(key)
-
-                threading.Thread(target=_load, daemon=True).start()
-    return jsonify({"model_ready": ready})
     state = _get_backend_state(backend)
+    ready = engine.is_loaded(backend=backend)
+    if ready and state["status"] != "ready":
+        _set_backend_state(backend, "ready", "Model ready")
+        state = _get_backend_state(backend)
     return jsonify({
-        "model_ready": engine.is_loaded(backend=backend),
+        "model_ready": ready,
         "status": state["status"],
         "message": state["message"],
     })
