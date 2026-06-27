@@ -218,6 +218,32 @@
       background: var(--surface);
     }
 
+    /* Diagram */
+    #diagram-wrap { display: none; flex-direction: column; gap: 8px; }
+    #diagram-wrap.visible { display: flex; }
+    #diagram-source {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--overlay);
+      border-radius: var(--radius);
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      min-height: 120px;
+      max-height: 220px;
+      padding: 10px;
+      overflow: auto;
+      white-space: pre;
+    }
+    #diagram-preview {
+      background: var(--surface);
+      border: 1px solid var(--overlay);
+      border-radius: var(--radius);
+      padding: 10px;
+      overflow: auto;
+      max-height: 280px;
+    }
+
     /* Toast */
     #toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px);
@@ -425,6 +451,29 @@
 
     <hr />
 
+    <div class="panel-title">Diagram (Mermaid)</div>
+    <div class="field">
+      <label for="diagram-title">Diagram title</label>
+      <input id="diagram-title" type="text" value="Text Flow" />
+    </div>
+    <div class="field">
+      <label for="diagram-scope">Text scope</label>
+      <select id="diagram-scope">
+        <option value="auto" selected>Auto (selection if any)</option>
+        <option value="selection">Only selected text</option>
+        <option value="full">Whole text</option>
+      </select>
+    </div>
+    <button class="btn btn-default" id="diagram-btn">🧭&nbsp; Generate Diagram</button>
+
+    <div id="diagram-wrap">
+      <div id="diagram-source"></div>
+      <div id="diagram-preview"></div>
+      <button class="btn btn-default" id="diagram-download-btn">⬇&nbsp; Download .mmd</button>
+    </div>
+
+    <hr />
+
     <div class="panel-title">Quick Actions</div>
     <label class="checkbox-row" title="Re-flow paragraphs and expand numbers / dates / abbreviations for the selected language before TTS.">
       <input type="checkbox" id="normalize-toggle" checked />
@@ -441,11 +490,14 @@
 <!-- Toast notification -->
 <div id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+
 <script>
   // ── State ────────────────────────────────────────────────────────────────
   let currentTaskId = null;
   let pollTimer = null;
   let currentAudioUrl = null;
+  let currentMermaid = '';
 
   // ── Elements ─────────────────────────────────────────────────────────────
   const textInput    = document.getElementById('text-input');
@@ -454,6 +506,8 @@
   const fileInput    = document.getElementById('file-input');
   const backendSelect = document.getElementById('backend-select');
   const deviceSelect  = document.getElementById('device-select');
+  const speakerSelect = document.getElementById('speaker-select');
+  const langSelect = document.getElementById('lang-select');
   const genBtn       = document.getElementById('gen-btn');
   const progressWrap = document.getElementById('progress-wrap');
   const progressBar  = document.getElementById('progress-bar');
@@ -464,6 +518,18 @@
   const modelDot     = document.getElementById('model-dot');
   const modelStatus  = document.getElementById('model-status');
   const toast        = document.getElementById('toast');
+  const diagramBtn   = document.getElementById('diagram-btn');
+  const diagramWrap  = document.getElementById('diagram-wrap');
+  const diagramTitle = document.getElementById('diagram-title');
+  const diagramScope = document.getElementById('diagram-scope');
+  const diagramSource = document.getElementById('diagram-source');
+  const diagramPreview = document.getElementById('diagram-preview');
+  const diagramDownloadBtn = document.getElementById('diagram-download-btn');
+
+  const defaultSpeakers = [{% for s in speakers %}"{{ s }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+  const edgeVoices = [{% for v in edge_voices %}"{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
 
   // ── Toast helper ─────────────────────────────────────────────────────────
   let toastTimer;
@@ -614,7 +680,7 @@
   async function pollModel(token) {
     if (token !== pollToken) return; // stale poll, abort
     try {
-      const res = await fetch(`/api/status?backend=${encodeURIComponent(backendSelect.value)}`);
+      const res = await fetch(`/api/status?backend=${encodeURIComponent(backendSelect.value)}&device=${encodeURIComponent(deviceSelect.value)}`);
       const data = await res.json();
       if (token !== pollToken) return;
 
@@ -663,10 +729,41 @@
 
   backendSelect.addEventListener('change', () => {
     startPollingForCurrentBackend();
+    updateSpeakerChoices();
+    resetModelStatus();
+    pollModel();
   });
   deviceSelect.addEventListener('change', () => {
     startPollingForCurrentBackend();
   });
+
+  function fillSelect(selectEl, values, preferred) {
+    const previous = selectEl.value;
+    selectEl.innerHTML = '';
+    values.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      selectEl.appendChild(opt);
+    });
+    if (values.includes(previous)) {
+      selectEl.value = previous;
+    } else if (preferred && values.includes(preferred)) {
+      selectEl.value = preferred;
+    } else if (values.length > 0) {
+      selectEl.value = values[0];
+    }
+  }
+
+  function updateSpeakerChoices() {
+    if (backendSelect.value === 'edge') {
+      fillSelect(speakerSelect, edgeVoices, 'pt-BR-AntonioNeural');
+    } else {
+      fillSelect(speakerSelect, defaultSpeakers, 'Ryan');
+    }
+  }
+
+  updateSpeakerChoices();
 
   // ── Generate ──────────────────────────────────────────────────────────────
   genBtn.addEventListener('click', startGenerate);
@@ -755,6 +852,72 @@
     showToast('Audio ready!');
   }
   function hideAudio() { audioWrap.classList.remove('visible'); audioPlayer.src = ''; }
+
+  // ── Mermaid diagram ──────────────────────────────────────────────────────
+  function selectedTextFromEditor() {
+    const start = textInput.selectionStart || 0;
+    const end = textInput.selectionEnd || 0;
+    if (end > start) {
+      return textInput.value.slice(start, end).trim();
+    }
+    return '';
+  }
+
+  async function generateDiagram() {
+    const text = textInput.value.trim();
+    if (!text) {
+      showToast('Enter some text first', true);
+      return;
+    }
+
+    diagramBtn.disabled = true;
+    try {
+      const res = await fetch('/api/diagram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          selected_text: selectedTextFromEditor(),
+          scope: diagramScope.value,
+          title: diagramTitle.value || 'Text Flow',
+          max_nodes: 12,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      currentMermaid = data.mermaid || '';
+      diagramSource.textContent = currentMermaid;
+
+      const renderId = 'm' + Date.now();
+      const rendered = await mermaid.render(renderId, currentMermaid);
+      diagramPreview.innerHTML = rendered.svg;
+
+      diagramWrap.classList.add('visible');
+      showToast('Diagram generated');
+    } catch (err) {
+      showToast(err.message || 'Diagram error', true);
+    } finally {
+      diagramBtn.disabled = false;
+    }
+  }
+
+  function downloadMermaid() {
+    if (!currentMermaid) {
+      showToast('Generate a diagram first', true);
+      return;
+    }
+    const blob = new Blob([currentMermaid], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'diagram.mmd';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  diagramBtn.addEventListener('click', generateDiagram);
+  diagramDownloadBtn.addEventListener('click', downloadMermaid);
 </script>
 </body>
 </html>

@@ -10,7 +10,8 @@ import uuid
 from flask import Flask, jsonify, render_template, request, send_file
 
 from document_reader import read_document
-from tts_engine import BACKENDS, DEFAULT_BACKEND, DEFAULT_DEVICE, LANGUAGES, SPEAKERS, TTSEngine
+from text_diagram import build_mermaid_flowchart
+from tts_engine import BACKENDS, DEFAULT_BACKEND, DEFAULT_DEVICE, EDGE_VOICES, LANGUAGES, SPEAKERS, TTSEngine
 
 app = Flask(__name__)
 engine = TTSEngine.get_instance()
@@ -21,6 +22,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # task registry  {task_id: {status, message, progress, file}}
 _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
+_loading_backends: set[tuple[str, str]] = set()
+_loading_lock = threading.Lock()
 
 # backend load state  {backend: {status: 'idle'|'loading'|'ready'|'error', message: str}}
 _backend_state: dict[str, dict] = {}
@@ -83,6 +86,7 @@ def index():
     return render_template(
         "index.html",
         speakers=SPEAKERS,
+        edge_voices=EDGE_VOICES,
         languages=LANGUAGES,
         backends=engine.list_backends(),
         default_backend=DEFAULT_BACKEND,
@@ -101,6 +105,23 @@ def favicon():
 @app.route("/api/status")
 def api_status():
     backend = (request.args.get("backend") or DEFAULT_BACKEND).strip().lower()
+    device = (request.args.get("device") or DEFAULT_DEVICE).strip()
+    ready = engine.is_loaded(backend=backend)
+    if not ready:
+        key = (backend, device)
+        with _loading_lock:
+            if key not in _loading_backends:
+                _loading_backends.add(key)
+
+                def _load():
+                    try:
+                        engine.load_model(backend=backend, device=device)
+                    finally:
+                        with _loading_lock:
+                            _loading_backends.discard(key)
+
+                threading.Thread(target=_load, daemon=True).start()
+    return jsonify({"model_ready": ready})
     state = _get_backend_state(backend)
     return jsonify({
         "model_ready": engine.is_loaded(backend=backend),
@@ -201,6 +222,29 @@ def api_generate():
     ).start()
 
     return jsonify({"task_id": task_id})
+
+
+@app.route("/api/diagram", methods=["POST"])
+def api_diagram():
+    data = request.get_json(force=True) or {}
+    source_text = (data.get("text") or "").strip()
+    selected_text = (data.get("selected_text") or "").strip()
+    mode = (data.get("scope") or "auto").strip().lower()
+    if mode == "selection":
+        text = selected_text
+    elif mode == "full":
+        text = source_text
+    else:
+        text = selected_text or source_text
+
+    if not text:
+        return jsonify({"error": "No text provided for diagram generation"}), 400
+
+    title = (data.get("title") or "Text Flow").strip()[:120]
+    max_nodes = int(data.get("max_nodes") or 12)
+    max_nodes = min(max(max_nodes, 3), 24)
+    mermaid = build_mermaid_flowchart(text=text, title=title, max_nodes=max_nodes)
+    return jsonify({"mermaid": mermaid})
 
 
 @app.route("/api/task/<task_id>")
