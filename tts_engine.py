@@ -3,14 +3,16 @@ Core TTS engine – multi-backend wrapper (Qwen, Piper, Coqui).
 Handles model loading, text chunking, and audio generation.
 """
 import os
-import re
 import shlex
 import subprocess
 import threading
+import asyncio
 
 import numpy as np
 import soundfile as sf
 import torch
+
+from text_processor import TextProcessor
 
 MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 
@@ -29,11 +31,69 @@ LANGUAGES = [
 
 BACKENDS = {
     "qwen": "Qwen3-TTS",
+    "edge": "Edge-TTS (Light)",
     "piper": "Piper TTS",
     "coqui": "Coqui TTS",
 }
 
-DEFAULT_BACKEND = os.getenv("TTS_BACKEND", "qwen").strip().lower()
+EDGE_LANGUAGE_DEFAULT_VOICE = {
+    "English": "en-US-GuyNeural",
+    "Portuguese": "pt-BR-AntonioNeural",
+    "Spanish": "es-ES-AlvaroNeural",
+    "French": "fr-FR-HenriNeural",
+    "German": "de-DE-ConradNeural",
+    "Italian": "it-IT-DiegoNeural",
+    "Japanese": "ja-JP-KeitaNeural",
+    "Korean": "ko-KR-InJoonNeural",
+    "Chinese": "zh-CN-YunxiNeural",
+    "Arabic": "ar-SA-HamedNeural",
+    "Hindi": "hi-IN-MadhurNeural",
+    "Russian": "ru-RU-DmitryNeural",
+}
+
+EDGE_VOICES = [
+    "en-US-GuyNeural",
+    "en-US-JennyNeural",
+    "en-GB-RyanNeural",
+    "pt-BR-AntonioNeural",
+    "pt-BR-FranciscaNeural",
+    "es-ES-AlvaroNeural",
+    "es-MX-DaliaNeural",
+    "fr-FR-HenriNeural",
+    "fr-FR-DeniseNeural",
+    "de-DE-ConradNeural",
+    "de-DE-KatjaNeural",
+    "it-IT-DiegoNeural",
+    "it-IT-ElsaNeural",
+    "ja-JP-KeitaNeural",
+    "ja-JP-NanamiNeural",
+    "ko-KR-InJoonNeural",
+    "ko-KR-SunHiNeural",
+    "zh-CN-YunxiNeural",
+    "zh-CN-XiaoxiaoNeural",
+    "ar-SA-HamedNeural",
+    "ar-SA-ZariyahNeural",
+    "hi-IN-MadhurNeural",
+    "hi-IN-SwaraNeural",
+    "ru-RU-DmitryNeural",
+    "ru-RU-SvetlanaNeural",
+]
+
+def _auto_backend_for_device() -> str:
+    requested = os.getenv("TTS_BACKEND")
+    if requested:
+        return requested.strip().lower()
+    if not torch.cuda.is_available():
+        return "edge"
+    try:
+        total_mem = torch.cuda.get_device_properties(0).total_memory
+        gb = total_mem / (1024 ** 3)
+        return "edge" if gb <= 4.5 else "qwen"
+    except Exception:
+        return "qwen"
+
+
+DEFAULT_BACKEND = _auto_backend_for_device()
 DEFAULT_DEVICE = os.getenv("TTS_DEVICE", "cuda:0").strip()
 
 
@@ -73,40 +133,8 @@ class QwenBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self.model is not None
 
-    @staticmethod
-    def _split_sentences(text: str) -> list[str]:
-        return [s for s in re.split(r'(?<=[.!?…])\s+', text.strip()) if s.strip()]
-
-    def _chunk_text(self, text: str, max_chars: int = 500) -> list[str]:
-        sentences = self._split_sentences(text)
-        chunks: list[str] = []
-        current = ""
-        for sent in sentences:
-            if len(current) + len(sent) + 1 <= max_chars:
-                current = (current + " " + sent).strip()
-            else:
-                if current:
-                    chunks.append(current)
-                if len(sent) > max_chars:
-                    # Split long sentence on commas
-                    parts = re.split(r'(?<=,)\s+', sent)
-                    sub = ""
-                    for p in parts:
-                        if len(sub) + len(p) + 1 <= max_chars:
-                            sub = (sub + " " + p).strip()
-                        else:
-                            if sub:
-                                chunks.append(sub)
-                            sub = p
-                    current = sub
-                else:
-                    current = sent
-        if current:
-            chunks.append(current)
-        return chunks or [text]
-
     def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
-        chunks = self._chunk_text(text)
+        chunks = TextProcessor.split_for_tts(text)
         n = len(chunks)
         all_wavs: list[np.ndarray] = []
 
@@ -127,6 +155,62 @@ class QwenBackend(BaseBackend):
         if progress_cb:
             progress_cb("Done.", 100)
         return output_path, self.sample_rate
+
+
+class EdgeBackend(BaseBackend):
+    name = "edge"
+
+    def __init__(self):
+        self._loaded = False
+
+    def load_model(self, device: str = "cuda:0", progress_cb=None):
+        if progress_cb:
+            progress_cb("Preparing Edge-TTS...", 20)
+        self._loaded = True
+        if progress_cb:
+            progress_cb("Edge-TTS ready.", 100)
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    @staticmethod
+    def _resolve_voice(language: str, speaker: str | None) -> str:
+        # If UI provides a full Edge voice id, use it directly.
+        if speaker and "Neural" in speaker and "-" in speaker:
+            return speaker.strip()
+        return EDGE_LANGUAGE_DEFAULT_VOICE.get(language, "en-US-GuyNeural")
+
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+        try:
+            import edge_tts
+        except ImportError as exc:
+            raise ImportError("edge-tts not installed. Run: pip install edge-tts") from exc
+
+        voice = self._resolve_voice(language=language, speaker=speaker)
+        if progress_cb:
+            progress_cb(f"Synthesizing with Edge-TTS ({voice})...", 40)
+
+        async def _run():
+            tmp_mp3 = f"{output_path}.edge.mp3"
+            try:
+                comm = edge_tts.Communicate(TextProcessor.normalize(text), voice=voice)
+                await comm.save(tmp_mp3)
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", tmp_mp3,
+                    "-ac", "1", "-ar", "24000", output_path,
+                ]
+                subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            finally:
+                if os.path.exists(tmp_mp3):
+                    os.remove(tmp_mp3)
+
+        try:
+            asyncio.run(_run())
+        except FileNotFoundError as exc:
+            raise RuntimeError("ffmpeg is required for Edge-TTS WAV conversion. Install ffmpeg or use another backend.") from exc
+        if progress_cb:
+            progress_cb("Done.", 100)
+        return output_path, 24000
 
 
 class PiperBackend(BaseBackend):
@@ -217,6 +301,7 @@ class TTSEngine:
         self._gen_lock = threading.Lock()
         self._backends = {
             "qwen": QwenBackend(),
+            "edge": EdgeBackend(),
             "piper": PiperBackend(),
             "coqui": CoquiBackend(),
         }

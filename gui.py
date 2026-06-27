@@ -11,7 +11,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from document_reader import READERS, read_document
-from tts_engine import BACKENDS, DEFAULT_BACKEND, DEFAULT_DEVICE, LANGUAGES, SPEAKERS, TTSEngine
+from text_diagram import build_mermaid_flowchart
+from tts_engine import BACKENDS, DEFAULT_BACKEND, DEFAULT_DEVICE, EDGE_VOICES, LANGUAGES, SPEAKERS, TTSEngine
 
 # ── Catppuccin Mocha palette ──────────────────────────────────────────────────
 BG      = "#1e1e2e"
@@ -42,6 +43,7 @@ class QweenApp(tk.Tk):
 
         self.engine = TTSEngine.get_instance()
         self.output_path = os.path.join(os.getcwd(), "output.wav")
+        self.diagram_text = ""
         self._model_ready = False
 
         self._setup_style()
@@ -174,8 +176,13 @@ class QweenApp(tk.Tk):
 
         ttk.Label(p, text="Speaker", style="SurfSub.TLabel").grid(row=4, column=0, **g)
         self.speaker_var = tk.StringVar(value="Ryan")
-        ttk.Combobox(p, textvariable=self.speaker_var,
-                     values=SPEAKERS, state="readonly").grid(row=5, column=0, **g)
+        self.speaker_combo = ttk.Combobox(
+            p,
+            textvariable=self.speaker_var,
+            values=SPEAKERS,
+            state="readonly",
+        )
+        self.speaker_combo.grid(row=5, column=0, **g)
 
         ttk.Label(p, text="Language", style="SurfSub.TLabel").grid(row=6, column=0, **g)
         self.lang_var = tk.StringVar(value="English")
@@ -201,14 +208,22 @@ class QweenApp(tk.Tk):
         ttk.Button(p, text="Clear Text", command=self._clear).grid(
             row=13, column=0, **g)
 
+        ttk.Separator(p).grid(row=14, column=0, sticky="ew", padx=16, pady=12)
+        ttk.Button(p, text="Generate Mermaid", command=self._generate_diagram).grid(
+            row=15, column=0, **g)
+        self.save_diagram_btn = ttk.Button(
+            p, text="Save Diagram .mmd", command=self._save_diagram_as, state="disabled"
+        )
+        self.save_diagram_btn.grid(row=16, column=0, **g)
+
         # Stretch filler
-        ttk.Frame(p, style="Surface.TFrame").grid(row=14, column=0, sticky="nsew")
-        p.rowconfigure(14, weight=1)
+        ttk.Frame(p, style="Surface.TFrame").grid(row=17, column=0, sticky="nsew")
+        p.rowconfigure(17, weight=1)
 
         # Model status indicator at bottom of panel
         self.model_indicator = ttk.Label(p, text="● Model loading…",
                                          style="SurfSub.TLabel")
-        self.model_indicator.grid(row=15, column=0, padx=16, pady=(0, 12), sticky="w")
+        self.model_indicator.grid(row=18, column=0, padx=16, pady=(0, 12), sticky="w")
 
     def _build_statusbar(self):
         bar = ttk.Frame(self, style="Surface.TFrame")
@@ -249,6 +264,15 @@ class QweenApp(tk.Tk):
         self.model_indicator.configure(text="● Model ready", foreground=GREEN)
 
     def _on_backend_change(self):
+        if self.backend_var.get() == "edge":
+            self.speaker_combo.configure(values=EDGE_VOICES)
+            if self.speaker_var.get() not in EDGE_VOICES:
+                self.speaker_var.set("pt-BR-AntonioNeural")
+        else:
+            self.speaker_combo.configure(values=SPEAKERS)
+            if self.speaker_var.get() not in SPEAKERS:
+                self.speaker_var.set("Ryan")
+
         self.gen_btn.config(state="disabled")
         self.play_btn.config(state="disabled")
         self.save_btn.config(state="disabled")
@@ -367,6 +391,35 @@ class QweenApp(tk.Tk):
         if dest:
             shutil.copy(self.output_path, dest)
             self._set_status(f"Saved to: {dest}")
+
+    def _generate_diagram(self):
+        full_text = self.text_area.get("1.0", tk.END).strip()
+        if not full_text:
+            messagebox.showwarning("Empty", "Enter or load text first.")
+            return
+
+        selected = ""
+        try:
+            selected = self.text_area.get(tk.SEL_FIRST, tk.SEL_LAST).strip()
+        except tk.TclError:
+            selected = ""
+
+        src = selected or full_text
+        self.diagram_text = build_mermaid_flowchart(src, title="Desktop Text Flow", max_nodes=12)
+        self.save_diagram_btn.config(state="normal")
+        self._set_status("Diagram generated (Mermaid).")
+
+    def _save_diagram_as(self):
+        if not self.diagram_text:
+            return
+        dest = filedialog.asksaveasfilename(
+            defaultextension=".mmd",
+            filetypes=[("Mermaid", "*.mmd"), ("All files", "*.*")],
+        )
+        if dest:
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(self.diagram_text)
+            self._set_status(f"Diagram saved to: {dest}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

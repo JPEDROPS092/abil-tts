@@ -1,0 +1,64 @@
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments / conda
+.venv/
+venv/
+env/
+ENV/
+conda/
+.conda/
+
+# Local env vars and secrets
+.env
+.env.*
+!.env.example
+
+# Build/test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Audio outputs (general)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.wma
+*.opus
+outputs/
+
+# TTS/model artifacts
+models/
+model/
+checkpoints/
+ckpt/
+weights/
+pretrained/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+*.tflite
+
+# Temp/log files
+*.log
+*.tmp
+*.temp
