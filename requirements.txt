@@ -12,12 +12,20 @@ coqui-tts
 soundfile
 numpy
 
+# Cloud TTS
+google-genai    # Gemini TTS (gemini-3.1-flash-tts-preview)
+
+# LLM (OpenAI-compatible client — MaaS, OpenAI, etc.)
+openai
+
 # Document formats
 python-docx
 pymupdf       # PDF support (import as fitz)
 
-# Web UI
-flask
+# Web API
+fastapi
+uvicorn[standard]
+python-multipart
 
 # Optional: desktop audio playback (Linux)
 # python-vlc

@@ -5,18 +5,18 @@
 </p>
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Flask](https://img.shields.io/badge/flask-web-000000?style=for-the-badge&logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
+[![FastAPI](https://img.shields.io/badge/fastapi-api-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Tkinter](https://img.shields.io/badge/tkinter-desktop-2C2D72?style=for-the-badge&logo=windowsterminal&logoColor=white)](https://docs.python.org/3/library/tkinter.html)
 [![License](https://img.shields.io/badge/license-MIT-0A0A0A?style=for-the-badge)](LICENSE)
 
-Text-to-speech (TTS) app with multiple backends (Qwen3-TTS, Piper, Coqui), with both a Flask web UI and a Tkinter desktop UI. It can read documents and generate WAV audio from text.
+Text-to-speech (TTS) app with multiple backends (Qwen3-TTS, Piper, Coqui), with a FastAPI server, Vue web UI, and Tkinter desktop UI. It can read documents and generate WAV audio from text.
 
 
 ![alt text](image.png)
 
 ## Features
 
-- Web UI with file upload and progress tracking.
+- Vue web UI with file upload, model controls, jobs, and progress tracking.
 - Mermaid diagram generation from full text or selected text snippets.
 - Exportable diagram source as `.mmd`.
 - Desktop UI with editor, word count, and playback.
@@ -26,13 +26,14 @@ Text-to-speech (TTS) app with multiple backends (Qwen3-TTS, Piper, Coqui), with 
 
 ## Structure
 
-- [app.py](app.py): Flask server and API.
+- [api.py](api.py): FastAPI server and API.
+- [app.py](app.py): compatibility launcher for the FastAPI app.
 - [gui.py](gui.py): Tkinter desktop app.
 - [tts_engine.py](tts_engine.py): multi-backend engine, chunking, and WAV writing.
 - [text_processor.py](text_processor.py): shared text segmentation for synthesis and diagrams.
 - [text_diagram.py](text_diagram.py): Mermaid flowchart generator.
 - [document_reader.py](document_reader.py): document text extraction.
-- [templates/index.html](templates/index.html): web UI.
+- [frontend/](frontend): Vue 3 + PrimeVue web UI.
 - [test_tts.py](test_tts.py): quick model test.
 - [requirements.txt](requirements.txt): Python dependencies.
 
@@ -72,9 +73,26 @@ pip install -r requirements.txt
 
 ## Run
 
-### Web (Flask)
+### Web (FastAPI + Vue)
+
+For development, run the API and Vue dev server separately:
 
 ```bash
+python app.py
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 in your browse  Sr.
+
+For a single production-style server:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
 python app.py
 ```
 

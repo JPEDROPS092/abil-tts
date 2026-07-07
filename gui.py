@@ -116,7 +116,7 @@ class AbilApp(tk.Tk):
         bar.grid(row=0, column=0, sticky="ew")
         bar.columnconfigure(3, weight=1)
 
-        ttk.Label(bar, text="⬛ Abil TTS", style="SurfTitle.TLabel").grid(
+        ttk.Label(bar, text="Abil TTS", style="SurfTitle.TLabel").grid(
             row=0, column=0, padx=16, pady=10)
 
         ttk.Button(bar, text="Open Document…", command=self._open_file).grid(
@@ -211,7 +211,7 @@ class AbilApp(tk.Tk):
 
         ttk.Separator(p).grid(row=8, column=0, sticky="ew", padx=16, pady=12)
 
-        self.gen_btn = ttk.Button(p, text="▶  Generate Audio",
+        self.gen_btn = ttk.Button(p, text="Generate Audio",
                                   style="Accent.TButton", command=self._generate)
         self.gen_btn.grid(row=9, column=0, **g)
 
@@ -241,7 +241,7 @@ class AbilApp(tk.Tk):
         p.rowconfigure(17, weight=1)
 
         # Model status indicator at bottom of panel
-        self.model_indicator = ttk.Label(p, text="● Model loading…",
+        self.model_indicator = ttk.Label(p, text="Model loading...",
                                          style="SurfSub.TLabel")
         self.model_indicator.grid(row=18, column=0, padx=16, pady=(0, 12), sticky="w")
 
@@ -264,7 +264,7 @@ class AbilApp(tk.Tk):
 
     def _load_model_async(self):
         self._model_ready = False
-        self.model_indicator.configure(text="● Model loading…", foreground=SUBTEXT)
+        self.model_indicator.configure(text="Model loading...", foreground=SUBTEXT)
         self.progress.start(12)
 
         def _run():
@@ -284,7 +284,7 @@ class AbilApp(tk.Tk):
     def _on_model_ready(self):
         self.progress.stop()
         self._set_status("Ready")
-        self.model_indicator.configure(text="● Model ready", foreground=GREEN)
+        self.model_indicator.configure(text="Model ready", foreground=GREEN)
 
     def _get_backend_key(self) -> str:
         """Return the internal key ('qwen', 'piper', 'coqui') for the selected backend."""

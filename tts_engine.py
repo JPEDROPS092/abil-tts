@@ -70,6 +70,7 @@ BACKENDS = {
     "edge": "Edge-TTS (Light)",
     "piper": "Piper TTS",
     "coqui": "Coqui TTS",
+    "gemini": "Gemini TTS (Cloud)",
 }
 
 EDGE_LANGUAGE_DEFAULT_VOICE = {
@@ -157,7 +158,7 @@ class BaseBackend:
     def is_loaded(self) -> bool:
         raise NotImplementedError
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
         raise NotImplementedError
 
 
@@ -180,7 +181,7 @@ class QwenBackend(BaseBackend):
         _require_torch_cuda(device, "Qwen")
         dtype = torch.bfloat16 if _is_cuda_device(device) else torch.float32
         self.model = Qwen3TTSModel.from_pretrained(
-            MODEL_ID,
+            os.getenv("QWEN_MODEL_ID", MODEL_ID),
             device_map=device,
             dtype=dtype,
         )
@@ -190,7 +191,7 @@ class QwenBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self.model is not None
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
         # Validate against what the model actually supports — fall back gracefully.
         if speaker not in SPEAKERS:
             print(f"[QwenBackend] Unknown speaker '{speaker}', falling back to 'Ryan'.")
@@ -264,7 +265,7 @@ class EdgeBackend(BaseBackend):
             return speaker.strip()
         return EDGE_LANGUAGE_DEFAULT_VOICE.get(language, "en-US-GuyNeural")
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
         try:
             import edge_tts
         except ImportError as exc:
@@ -274,10 +275,14 @@ class EdgeBackend(BaseBackend):
         if progress_cb:
             progress_cb(f"Synthesizing with Edge-TTS ({voice})...", 40)
 
+        # Convert speed multiplier to Edge-TTS rate string (e.g. 1.5 → "+50%")
+        rate_pct = int((speed - 1.0) * 100)
+        rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+
         async def _run():
             tmp_mp3 = f"{output_path}.edge.mp3"
             try:
-                comm = edge_tts.Communicate(TextProcessor.normalize(text), voice=voice)
+                comm = edge_tts.Communicate(TextProcessor.normalize(text), voice=voice, rate=rate_str)
                 await comm.save(tmp_mp3)
                 ffmpeg_cmd = [
                     "ffmpeg", "-y", "-i", tmp_mp3,
@@ -367,7 +372,7 @@ class PiperBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self._loaded
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
         if progress_cb:
             progress_cb("Generating...", 40)
         cmd = list(self._invoke) + ["-m", self.model_path, "-f", output_path]
@@ -421,7 +426,7 @@ class CoquiBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self.tts is not None
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
         if progress_cb:
             progress_cb("Generating...", 40)
         kwargs = {}
@@ -435,6 +440,118 @@ class CoquiBackend(BaseBackend):
         return output_path, 0
 
 
+class GeminiBackend(BaseBackend):
+    """Google Gemini TTS backend using the google-genai streaming API."""
+    name = "gemini"
+
+    def __init__(self):
+        self._loaded = False
+
+    def load_model(self, device: str = "cuda:0", progress_cb=None):
+        try:
+            from google import genai  # type: ignore  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "google-genai not installed. Run: pip install google-genai"
+            ) from exc
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY environment variable not set. "
+                "Set it to your Google AI Studio API key."
+            )
+        if progress_cb:
+            progress_cb("Gemini TTS ready.", 100)
+        self._loaded = True
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    @staticmethod
+    def _convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
+        import struct
+        bits_per_sample = 16
+        rate = 24000
+        for param in mime_type.split(";"):
+            param = param.strip()
+            if param.lower().startswith("rate="):
+                try:
+                    rate = int(param.split("=", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+            elif param.startswith("audio/L"):
+                try:
+                    bits_per_sample = int(param.split("L", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+        num_channels = 1
+        data_size = len(audio_data)
+        bytes_per_sample = bits_per_sample // 8
+        block_align = num_channels * bytes_per_sample
+        byte_rate = rate * block_align
+        chunk_size = 36 + data_size
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", chunk_size, b"WAVE", b"fmt ",
+            16, 1, num_channels, rate, byte_rate,
+            block_align, bits_per_sample, b"data", data_size,
+        )
+        return header + audio_data
+
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
+        try:
+            from google import genai
+            from google.genai import types  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("google-genai not installed. Run: pip install google-genai") from exc
+
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY environment variable not set.")
+
+        if progress_cb:
+            progress_cb("Connecting to Gemini TTS...", 10)
+
+        client = genai.Client(api_key=api_key)
+        model = "gemini-3.1-flash-tts-preview"
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=text)])]
+        config = types.GenerateContentConfig(
+            temperature=1,
+            response_modalities=["audio"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+                )
+            ),
+        )
+
+        if progress_cb:
+            progress_cb("Generating with Gemini TTS...", 40)
+
+        audio_chunks: list[bytes] = []
+        mime_type = "audio/L16;rate=24000"
+        for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
+            if not chunk.parts:
+                continue
+            part = chunk.parts[0]
+            if part.inline_data and part.inline_data.data:
+                audio_chunks.append(part.inline_data.data)
+                if part.inline_data.mime_type:
+                    mime_type = part.inline_data.mime_type
+
+        if not audio_chunks:
+            raise RuntimeError("Gemini TTS returned no audio data")
+
+        raw_audio = b"".join(audio_chunks)
+        wav_data = self._convert_to_wav(raw_audio, mime_type)
+        with open(output_path, "wb") as f:
+            f.write(wav_data)
+
+        if progress_cb:
+            progress_cb("Done.", 100)
+        return output_path, 24000
+
+
 class TTSEngine:
     _instance = None
     _class_lock = threading.Lock()
@@ -446,6 +563,7 @@ class TTSEngine:
             "edge": EdgeBackend(),
             "piper": PiperBackend(),
             "coqui": CoquiBackend(),
+            "gemini": GeminiBackend(),
         }
 
     # ── Singleton ─────────────────────────────────────────────────────────────
@@ -486,6 +604,7 @@ class TTSEngine:
         device: str = DEFAULT_DEVICE,
         progress_cb=None,
         normalize_text: bool = True,
+        speed: float = 1.0,
     ) -> tuple[str, int]:
         """Generate speech and write to *output_path*.
 
@@ -512,4 +631,5 @@ class TTSEngine:
                 speaker=speaker,
                 output_path=output_path,
                 progress_cb=progress_cb,
+                speed=speed,
             )
