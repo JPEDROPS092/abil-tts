@@ -11,7 +11,6 @@
 
 Text-to-speech (TTS) app with multiple backends (Qwen3-TTS, Piper, Coqui), with a FastAPI server, Vue web UI, and Tkinter desktop UI. It can read documents and generate WAV audio from text.
 
-
 ![alt text](image.png)
 
 ## Features
@@ -21,7 +20,7 @@ Text-to-speech (TTS) app with multiple backends (Qwen3-TTS, Piper, Coqui), with 
 - Exportable diagram source as `.mmd`.
 - Desktop UI with editor, word count, and playback.
 - Multiple languages and preset speakers (backend dependent).
-- Reads .txt, .md, .docx, and .pdf.
+- Reads `.txt`, `.md`, `.html`, `.rtf`, `.docx`, `.pdf`, and `.epub`.
 - Background generation with WAV download.
 
 ## Structure
@@ -116,8 +115,24 @@ The file `output.wav` will be created in the current directory.
 
 - `.txt`
 - `.md` / `.markdown`
+- `.html` / `.htm`
+- `.rtf`
 - `.docx`
 - `.pdf`
+- `.epub`
+
+Document extraction removes common page-number noise, keeps paragraph boundaries,
+converts table rows into readable prose, and preserves mathematical notation. Before
+generation, text normalization expands common notation for natural speech; use
+**Traduzir para PT-BR** in the LLM panel when a configured LLM is available.
+
+## Studio local
+
+The app persists uploaded documents, structured blocks, and generation history in
+`data/abil-studio.db` (SQLite). The Documento panel reopens saved files and switches
+between the original document view and a TTS-ready view. PDFs use the built-in reader
+by default; if `docling` is installed in a separate compatible environment, the
+pipeline automatically uses its Markdown extraction before falling back locally.
 
 ## Notes
 

@@ -26,6 +26,7 @@ pymupdf       # PDF support (import as fitz)
 fastapi
 uvicorn[standard]
 python-multipart
+EbookLib
 
 # Optional: desktop audio playback (Linux)
 # python-vlc
