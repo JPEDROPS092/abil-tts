@@ -8,6 +8,15 @@
           <span v-if="slotProps.message.detail">{{ slotProps.message.detail }}</span>
         </div>
       </div>
+
+      <Dialog v-model:visible="llmTestDialog" modal header="Teste LLM: Fale sobre a fruta Abil" :style="{ width: '560px' }">
+        <div class="fg">
+          <div style="white-space:pre-wrap;">{{ llmTestOutput }}</div>
+        </div>
+        <template #footer>
+          <Button label="Fechar" severity="secondary" text @click="llmTestDialog = false" />
+        </template>
+      </Dialog>
     </template>
   </Toast>
 
@@ -118,6 +127,20 @@
         />
         <div class="tb-sep"></div>
         <Button icon="pi pi-clipboard" label="Colar" size="small" severity="secondary" text @click="pasteClipboard" />
+        <!-- Seletor e teste rápido de LLM no editor -->
+        <div class="editor-llm-inline" style="display:flex;align-items:center;gap:8px;margin-left:8px;">
+          <Dropdown
+            v-model="editorLLMModel"
+            :options="llmModelOptions"
+            option-label="id"
+            option-value="id"
+            placeholder="Modelo LLM"
+            style="min-width:180px"
+          />
+          <Button class="llm-test-btn" severity="secondary" outlined size="small" @click="quickTestLLM">
+            <img src="/abil.svg" alt="abil" style="width:18px;height:18px;margin-right:6px;vertical-align:middle;" /> Testar LLM
+          </Button>
+        </div>
         <Button icon="pi pi-times" label="Limpar" size="small" severity="danger" text @click="clearText" :disabled="!text.trim()" />
         <div class="tb-sep"></div>
         <Button
@@ -194,6 +217,35 @@
               />
               <Button icon="pi pi-clipboard" label="Colar texto" severity="secondary" outlined @click="pasteClipboard" />
             </div>
+          </div>
+
+          <!-- Abrir existente / criar novo dentro do editor -->
+          <div v-if="!text" class="editor-empty-extra">
+            <div class="editor-extra-row">
+              <Button label="Criar novo documento" icon="pi pi-plus" severity="secondary" text @click="() => { clearText(); nextTick(() => document.querySelector('.editor-ta')?.focus()); }" />
+            </div>
+
+            <details class="editor-open-existing">
+              <summary>Abrir documento existente</summary>
+              <div class="editor-doc-cats">
+                <div v-if="studioDocuments.length === 0" class="editor-doc-empty">
+                  <span>Nenhum documento disponível no Studio.</span>
+                  <small>Use "Abrir arquivo" ou o botão "Novo" para criar.</small>
+                </div>
+                <div v-else>
+                  <div v-for="cat in docCategories" :key="cat.category" class="doc-cat">
+                    <div class="doc-cat-title">{{ cat.category }} <span class="doc-cat-count">{{ cat.docs.length }}</span></div>
+                    <div class="doc-cat-list">
+                      <button v-for="d in cat.docs" :key="d.id" class="doc-open-row" @click="openStudioDocumentInEditor(d.id)">
+                        <i :class="['pi', docIcon(d.source_name)]"></i>
+                        <span class="doc-open-name">{{ d.display_name || d.source_name }}</span>
+                        <span class="doc-open-meta">{{ d.block_count }} blocos · {{ formatDocDate(d.updated_at) }}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
           </div>
 
           <Textarea
@@ -487,15 +539,22 @@
 
             <!-- ─────────── DOCUMENTO ──────────────────────────── -->
             <div v-show="activeView === 'document'" class="pane doc-pane">
-              <div class="doc-library">
+              <div class="doc-library" :class="{ collapsed: !showDocLibrary }">
                 <div class="doc-lib-head">
-                  <span class="doc-lib-title">
+                  <button
+                    class="doc-lib-title"
+                    title="Recolher/expandir"
+                    :aria-expanded="showDocLibrary"
+                    aria-controls="doc-library-body"
+                    @click="showDocLibrary = !showDocLibrary"
+                  >
+                    <i class="pi doc-collapse-chev" :class="showDocLibrary ? 'pi-chevron-down' : 'pi-chevron-right'"></i>
                     <i class="pi pi-folder-open"></i> Documentos carregados
-                  </span>
+                  </button>
                   <span class="doc-lib-count">
                     {{ filteredStudioDocuments.length }}<template v-if="docLibrarySearch"> de {{ studioDocuments.length }}</template>
                   </span>
-                  <div class="doc-lib-actions">
+                  <div v-show="showDocLibrary" class="doc-lib-actions">
                     <div class="doc-lib-search">
                       <i class="pi pi-search"></i>
                       <input v-model="docLibrarySearch" type="text" placeholder="Filtrar documentos…" />
@@ -519,6 +578,7 @@
                   </div>
                 </div>
 
+                <div v-show="showDocLibrary" id="doc-library-body" class="doc-lib-body">
                 <div v-if="studioDocuments.length === 0" class="doc-lib-empty">
                   <i class="pi pi-inbox"></i>
                   <span>Nenhum documento carregado ainda</span>
@@ -558,19 +618,28 @@
                     </span>
                   </div>
                 </div>
+                </div><!-- /doc-library-body -->
               </div>
               <!-- Áudios gerados deste documento (player) -->
-              <div v-if="activeDocumentId" class="doc-audios">
+              <div v-if="activeDocumentId" class="doc-audios" :class="{ collapsed: !showDocAudios }">
                 <div class="doc-audios-head">
-                  <span class="doc-audios-title">
+                  <button
+                    class="doc-audios-title"
+                    title="Recolher/expandir"
+                    :aria-expanded="showDocAudios"
+                    aria-controls="doc-audios-body"
+                    @click="showDocAudios = !showDocAudios"
+                  >
+                    <i class="pi doc-collapse-chev" :class="showDocAudios ? 'pi-chevron-down' : 'pi-chevron-right'"></i>
                     <i class="pi pi-headphones"></i> Áudios gerados
-                  </span>
+                  </button>
                   <span class="doc-audios-count">{{ documentJobs.length }}</span>
-                  <button class="doc-lib-icon-btn" title="Atualizar áudios" @click="refreshJobs">
+                  <button v-show="showDocAudios" class="doc-lib-icon-btn" title="Atualizar áudios" @click.stop="refreshJobs">
                     <i class="pi pi-refresh"></i>
                   </button>
                 </div>
 
+                <div v-show="showDocAudios" id="doc-audios-body" class="doc-audios-body">
                 <div v-if="documentJobs.length === 0" class="doc-audios-empty">
                   <i class="pi pi-volume-off"></i>
                   <span>Nenhum áudio gerado para este documento ainda</span>
@@ -642,6 +711,7 @@
                     </div>
                   </div>
                 </div>
+                </div><!-- /doc-audios-body -->
               </div>
 
               <div class="doc-toolbar">
@@ -1363,6 +1433,44 @@ const chatInput = ref('');
 const chatStreaming = ref(false);
 const chatContainer = ref(null);
 
+// Editor LLM quick test state
+const editorLLMModel = ref('');
+const llmTestOutput = ref('');
+const llmTestDialog = ref(false);
+
+watch(llmModelOptions, (v) => {
+  if (!editorLLMModel.value && v.length) editorLLMModel.value = v[0].id || v[0];
+});
+
+watch(editorLLMModel, async (val, oldVal) => {
+  if (!val || val === oldVal) return;
+  try {
+    // Update server-side LLM config with new model selection
+    llmConfig.model = val;
+    await saveLLMConfig();
+    notify('Modelo LLM selecionado', val, 'success');
+  } catch (e) {
+    notify('Falha ao selecionar modelo', e.message || String(e), 'error');
+  }
+});
+
+async function quickTestLLM() {
+  // Prompt fixed as requested
+  const prompt = 'Fale sobre a fruta Abil.';
+  try {
+    const res = await api('/api/llm/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: prompt }),
+    });
+    llmTestOutput.value = res.text || JSON.stringify(res);
+    llmTestDialog.value = true;
+    notify('Resposta recebida', '', 'success');
+  } catch (e) {
+    notify('Erro no teste LLM', e.message || String(e), 'error');
+  }
+}
+
 // ── Document viewer state ──────────────────────────────────────────────────
 const docFollowTTS = ref(true);
 const docCurrentPara = ref(-1);
@@ -1371,6 +1479,9 @@ const docSearch = ref('');
 const docSearchInputEl = ref(null);
 // Navegação: sumário/outline, seção atual (sticky) e progresso de rolagem.
 const showOutline = ref(true);
+// Seções recolhíveis para maximizar o espaço do viewer de blocos.
+const showDocLibrary = ref(true);
+const showDocAudios = ref(false);
 const docCurrentSectionIdx = ref(-1); // heading (originalIdx) visível no topo
 const docScrollPct = ref(0);          // 0..1 posição de rolagem (minimapa)
 // ── Computed ───────────────────────────────────────────────────────────────
@@ -1746,6 +1857,24 @@ const filteredStudioDocuments = computed(() => {
   });
 });
 
+// Agrupa documentos por categoria (meta.category, meta.categories, meta.tags ou 'Sem categoria')
+const docCategories = computed(() => {
+  const map = new Map();
+  for (const doc of studioDocuments.value) {
+    const metaVal = doc.meta || {};
+    let catField = metaVal.category || metaVal.categories || metaVal.tags || 'Sem categoria';
+    let keys = [];
+    if (Array.isArray(catField)) keys = catField.length ? catField : ['Sem categoria'];
+    else if (typeof catField === 'string') keys = catField.split(',').map(s => s.trim()).filter(Boolean) || ['Sem categoria'];
+    else keys = ['Sem categoria'];
+    for (const k of keys) {
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(doc);
+    }
+  }
+  return [...map.entries()].map(([category, docs]) => ({ category, docs }));
+});
+
 const editDialog = reactive({
   visible: false,
   id: null,
@@ -1827,6 +1956,37 @@ async function openStudioDocument(documentId) {
     documentMode.value = 'document';
     docEditing.value = false;
     clearAudioCache();
+    // Recolhe a biblioteca para dar espaço máximo ao viewer de blocos.
+    showDocLibrary.value = false;
+    // Foca/realça o início do documento no viewer.
+    docSearch.value = '';
+    stopPlayback(true);
+    nextTick(() => {
+      if (docViewerEl.value) docViewerEl.value.scrollTop = 0;
+      const first = filteredParagraphs.value[0];
+      docCurrentPara.value = first ? first.originalIdx : -1;
+      onDocScroll();
+    });
+  } catch (error) {
+    notify('Falha ao abrir documento', error.message, 'error');
+  }
+}
+
+// Abre um documento do Studio diretamente no editor (mantém document metadata)
+async function openStudioDocumentInEditor(documentId) {
+  try {
+    const result = await api(`/api/documents/${documentId}`);
+    text.value = result.text;
+    docBlocks.value = result.blocks || [];
+    activeDocumentId.value = documentId;
+    documentMode.value = 'document';
+    docEditing.value = false;
+    clearAudioCache();
+    // Fecha a biblioteca para dar espaço
+    showDocLibrary.value = false;
+    // Vai para a aba editor e foca o textarea
+    activeView.value = 'editor';
+    nextTick(() => { const ta = document.querySelector('.editor-ta'); ta?.focus(); });
   } catch (error) {
     notify('Falha ao abrir documento', error.message, 'error');
   }

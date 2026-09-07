@@ -587,20 +587,26 @@ class PiperBackend(BaseBackend):
         self.config_path = config_path
         self.use_cuda = _is_cuda_device(device)
         if self.use_cuda:
+            # CUDA is best-effort for Piper: if ONNX Runtime can't expose the
+            # CUDA provider (e.g. the CPU-only `onnxruntime` wheel is installed
+            # instead of `onnxruntime-gpu`, or CUDA/driver is missing), fall back
+            # to CPU with a warning instead of failing synthesis entirely.
+            reason = ""
             try:
                 import onnxruntime as ort
-                providers = set(ort.get_available_providers())
+                if "CUDAExecutionProvider" not in set(ort.get_available_providers()):
+                    reason = (
+                        "ONNX Runtime does not expose CUDAExecutionProvider "
+                        "(install onnxruntime-gpu with matching CUDA/cuDNN)"
+                    )
             except Exception as exc:
-                raise RuntimeError(
-                    "Piper CUDA was requested, but onnxruntime is not available. "
-                    "Install onnxruntime-gpu or select device=cpu."
-                ) from exc
-            if "CUDAExecutionProvider" not in providers:
-                raise RuntimeError(
-                    "Piper CUDA was requested, but ONNX Runtime does not expose "
-                    "CUDAExecutionProvider. Install/configure onnxruntime-gpu, CUDA, "
-                    "and the NVIDIA driver, or select device=cpu."
-                )
+                reason = f"onnxruntime not available ({exc})"
+            if reason:
+                self.use_cuda = False
+                msg = f"Piper CUDA requested but unavailable: {reason}. Falling back to CPU."
+                print(f"[PiperBackend] {msg}")
+                if progress_cb:
+                    progress_cb(msg, 90)
         self._loaded = True
         if progress_cb:
             progress_cb("Model ready.", 100)
