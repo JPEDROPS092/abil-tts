@@ -2026,6 +2026,42 @@ h5.doc-heading, h6.doc-heading { font-size: 13px; font-weight: 600; color: var(-
 
 .doc-audios-head .doc-lib-icon-btn { margin-left: auto; }
 
+/* ── Seções recolhíveis (biblioteca / áudios) ────────────────────────── */
+.doc-lib-title,
+.doc-audios-title {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.doc-lib-title:hover,
+.doc-audios-title:hover { color: var(--tx1); }
+.doc-lib-title:hover .pi,
+.doc-audios-title:hover .pi { color: var(--tx0); }
+
+.doc-lib-title .doc-collapse-chev,
+.doc-audios-title .doc-collapse-chev {
+  font-size: 9px;
+  color: var(--tx2);
+  width: 9px;
+}
+
+/* Corpo recolhível: preserva a cadeia flex para o grid/lista rolarem. */
+.doc-lib-body,
+.doc-audios-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Recolhida: só a barra do cabeçalho ocupa espaço, liberando o viewer. */
+.doc-library.collapsed,
+.doc-audios.collapsed { max-height: none; }
+.doc-library.collapsed .doc-lib-head,
+.doc-audios.collapsed .doc-audios-head { padding-bottom: 9px; }
+.doc-audios.collapsed .doc-audios-count { margin-left: auto; }
+
 .doc-audios-empty {
   display: flex;
   flex-direction: column;
