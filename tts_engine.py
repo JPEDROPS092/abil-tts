@@ -18,11 +18,9 @@ from text_processor import TextProcessor
 
 MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-PIPER_DEFAULT_MODEL = os.path.join(
-    PROJECT_DIR,
-    "models",
-    "piper",
-    "pt_BR-faber-medium.onnx",
+PIPER_DEFAULT_MODELS = (
+    os.path.join(PROJECT_DIR, "models", "piper", "pt_BR-faber-medium.onnx"),
+    os.path.join(PROJECT_DIR, "pt_BR-faber-medium.onnx"),
 )
 
 # Speakers actually supported by Qwen3-TTS CustomVoice.
@@ -64,6 +62,32 @@ LANGUAGES = [
     "Spanish",
     "Italian",
 ]
+
+QWEN_SPEAKER_IDS = {
+    "Ryan": "ryan",
+    "Aiden": "aiden",
+    "Vivian": "vivian",
+    "Serena": "serena",
+    "Uncle_Fu": "uncle_fu",
+    "Dylan": "dylan",
+    "Eric": "eric",
+    "Ono_Anna": "ono_anna",
+    "Sohee": "sohee",
+}
+
+QWEN_LANGUAGE_IDS = {
+    "Auto": "auto",
+    "Chinese": "chinese",
+    "English": "english",
+    "French": "french",
+    "German": "german",
+    "Italian": "italian",
+    "Japanese": "japanese",
+    "Korean": "korean",
+    "Portuguese": "portuguese",
+    "Russian": "russian",
+    "Spanish": "spanish",
+}
 
 BACKENDS = {
     "qwen": "Qwen3-TTS",
@@ -116,6 +140,80 @@ EDGE_VOICES = [
     "ru-RU-SvetlanaNeural",
 ]
 
+# Voices exposed by the Google Gemini TTS prebuilt voice set.
+GEMINI_VOICES = [
+    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+    "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
+    "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
+    "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
+    "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+]
+
+# Selectable Coqui models. XTTS v2 is multilingual (incl. pt-BR) and is the
+# default; the pt-BR VITS model is a lighter, monolingual alternative.
+COQUI_MODELS = {
+    "tts_models/multilingual/multi-dataset/xtts_v2": "XTTS v2 (multilíngue)",
+    "tts_models/pt/cv/vits": "VITS pt-BR (leve)",
+}
+COQUI_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+# Curated subset of XTTS v2 built-in studio speakers (the model ships ~58).
+COQUI_XTTS_SPEAKERS = [
+    "Ana Florence", "Sofia Hellen", "Alison Dietlinde", "Gracie Wise",
+    "Tammie Ema", "Annmarie Nele", "Brenda Stern", "Henriette Usha",
+    "Daisy Studious", "Alexandra Hisakawa", "Claribel Dervla", "Andrew Chipper",
+    "Damien Black", "Craig Gutsy", "Marcos Rudaski", "Viktor Eka",
+]
+
+# XTTS per-language character limit (text longer than this is truncated by the
+# model). Used to size chunks so long blocks synthesize fully instead of failing.
+COQUI_CHAR_LIMITS = {
+    "en": 250, "de": 253, "fr": 273, "es": 239, "it": 213, "pt": 203,
+    "pl": 224, "tr": 226, "ru": 182, "nl": 251, "cs": 186, "ar": 166,
+    "zh-cn": 82, "hu": 224, "ko": 95, "ja": 71, "hi": 150,
+}
+
+# Coqui / XTTS expect 2-letter language codes.
+COQUI_LANG_CODES = {
+    "English": "en",
+    "Portuguese": "pt",
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Italian": "it",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Chinese": "zh-cn",
+    "Russian": "ru",
+}
+
+# Voice names available per backend, surfaced as metadata so the UI can show
+# only the voices that belong to the selected backend. Piper's voice is
+# determined by the loaded .onnx model, so it has no selectable list here.
+BACKEND_VOICES = {
+    "qwen": SPEAKERS,
+    "edge": EDGE_VOICES,
+    "coqui": COQUI_XTTS_SPEAKERS,
+    "gemini": GEMINI_VOICES,
+    "piper": [],
+}
+
+# Languages each backend can actually handle, surfaced as metadata so the UI
+# filters the language dropdown to what the selected backend supports. Coqui
+# reflects the default XTTS v2 model; Piper's language is baked into the loaded
+# .onnx voice (the bundled default is pt-BR).
+BACKEND_LANGUAGES = {
+    "qwen": LANGUAGES,
+    "edge": list(EDGE_LANGUAGE_DEFAULT_VOICE.keys()),
+    "coqui": [
+        "Portuguese", "English", "Spanish", "French", "German", "Italian",
+        "Russian", "Chinese", "Japanese", "Korean",
+    ],
+    "gemini": LANGUAGES,
+    "piper": ["Portuguese"],
+}
+
+
 def _auto_backend_for_device() -> str:
     requested = os.getenv("TTS_BACKEND")
     if requested:
@@ -149,6 +247,89 @@ def _require_torch_cuda(device: str, backend: str) -> None:
     )
 
 
+class CancelledError(RuntimeError):
+    """Raised when a generation is aborted because should_cancel() became true."""
+
+
+# ── Subprocess tracking ─────────────────────────────────────────────────────
+# Every subprocess a backend spawns (piper, ffmpeg, ...) is registered here so
+# it can be actually terminated on cancel or on server shutdown, instead of
+# being left running as an orphan.
+_active_processes: set[subprocess.Popen] = set()
+_active_processes_lock = threading.Lock()
+
+
+def _register_process(proc: subprocess.Popen) -> None:
+    with _active_processes_lock:
+        _active_processes.add(proc)
+
+
+def _unregister_process(proc: subprocess.Popen) -> None:
+    with _active_processes_lock:
+        _active_processes.discard(proc)
+
+
+def terminate_all_processes() -> None:
+    """Terminate every tracked backend subprocess (used on server shutdown)."""
+    with _active_processes_lock:
+        procs = list(_active_processes)
+    for proc in procs:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    for proc in procs:
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _run_subprocess(cmd, *, input_bytes=None, should_cancel=None, poll_interval=0.25):
+    """Run *cmd* as a tracked subprocess while polling *should_cancel*.
+
+    Returns ``(returncode, stdout_bytes, stderr_bytes)``. If *should_cancel*
+    returns true before the process finishes, the process is terminated (then
+    killed if it does not exit) and :class:`CancelledError` is raised.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE if input_bytes is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _register_process(proc)
+    result: dict = {}
+
+    def _communicate():
+        try:
+            result["out"], result["err"] = proc.communicate(input=input_bytes)
+        except Exception as exc:  # pragma: no cover - defensive
+            result["exc"] = exc
+
+    worker = threading.Thread(target=_communicate, daemon=True)
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(timeout=poll_interval)
+            if should_cancel and should_cancel():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                worker.join(timeout=2)
+                raise CancelledError("Job cancelled")
+    finally:
+        _unregister_process(proc)
+    if "exc" in result:
+        raise result["exc"]
+    return proc.returncode, result.get("out"), result.get("err")
+
+
 class BaseBackend:
     name = "base"
 
@@ -158,7 +339,7 @@ class BaseBackend:
     def is_loaded(self) -> bool:
         raise NotImplementedError
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
         raise NotImplementedError
 
 
@@ -191,45 +372,66 @@ class QwenBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self.model is not None
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
-        # Validate against what the model actually supports — fall back gracefully.
-        if speaker not in SPEAKERS:
-            print(f"[QwenBackend] Unknown speaker '{speaker}', falling back to 'Ryan'.")
-            speaker = "Ryan"
-        if language not in LANGUAGES:
-            print(f"[QwenBackend] Unknown language '{language}', falling back to 'English'.")
-            language = "English"
+    @staticmethod
+    def _normalize_choice(value: str, mapping: dict[str, str], fallback_label: str) -> str:
+        if not value:
+            return mapping[fallback_label]
+        raw = value.strip()
+        if raw in mapping:
+            return mapping[raw]
+        lowered = raw.lower()
+        for label, backend_id in mapping.items():
+            if lowered == label.lower() or lowered == backend_id.lower():
+                return backend_id
+        return mapping[fallback_label]
+
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
+        speaker_id = self._normalize_choice(speaker, QWEN_SPEAKER_IDS, "Ryan")
+        language_id = self._normalize_choice(language, QWEN_LANGUAGE_IDS, "English")
+        if speaker_id != (speaker or "").strip():
+            print(f"[QwenBackend] Normalized speaker '{speaker}' -> '{speaker_id}'.")
+        if language_id != (language or "").strip():
+            print(f"[QwenBackend] Normalized language '{language}' -> '{language_id}'.")
 
         # Cross-check with the model's own runtime-reported lists, when available.
         try:
             supported_speakers = self.model.get_supported_speakers()
-            if supported_speakers and speaker not in supported_speakers:
-                print(f"[QwenBackend] Speaker '{speaker}' not in model list {supported_speakers}; using first available.")
-                speaker = supported_speakers[0]
+            if supported_speakers:
+                speaker_lookup = {item.lower(): item for item in supported_speakers}
+                if speaker_id.lower() not in speaker_lookup:
+                    print(f"[QwenBackend] Speaker '{speaker_id}' not in model list {supported_speakers}; using first available.")
+                    speaker_id = supported_speakers[0]
+                else:
+                    speaker_id = speaker_lookup[speaker_id.lower()]
         except Exception:
             pass
         try:
             supported_langs = self.model.get_supported_languages()
-            if supported_langs and language not in supported_langs:
-                print(f"[QwenBackend] Language '{language}' not in model list {supported_langs}; using 'English'.")
-                language = "English" if "English" in supported_langs else supported_langs[0]
+            if supported_langs:
+                language_lookup = {item.lower(): item for item in supported_langs}
+                if language_id.lower() not in language_lookup:
+                    print(f"[QwenBackend] Language '{language_id}' not in model list {supported_langs}; using 'english'.")
+                    language_id = language_lookup.get("english", supported_langs[0])
+                else:
+                    language_id = language_lookup[language_id.lower()]
         except Exception:
             pass
 
-        print(f"[QwenBackend] generate(language={language!r}, speaker={speaker!r}, chars={len(text)})")
+        print(f"[QwenBackend] generate(language={language_id!r}, speaker={speaker_id!r}, chars={len(text)})")
 
-        chunks = self._chunk_text(text)
         chunks = TextProcessor.split_for_tts(text)
         n = len(chunks)
         all_wavs: list[np.ndarray] = []
 
         for i, chunk in enumerate(chunks):
+            if should_cancel and should_cancel():
+                raise CancelledError("Job cancelled")
             if progress_cb:
                 progress_cb(f"Chunk {i + 1}/{n}...", int(i / n * 90))
             wavs, sr = self.model.generate_custom_voice(
                 text=chunk,
-                language=language,
-                speaker=speaker,
+                language=language_id,
+                speaker=speaker_id,
             )
             self.sample_rate = sr
             all_wavs.append(wavs[0])
@@ -265,38 +467,64 @@ class EdgeBackend(BaseBackend):
             return speaker.strip()
         return EDGE_LANGUAGE_DEFAULT_VOICE.get(language, "en-US-GuyNeural")
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
         try:
             import edge_tts
         except ImportError as exc:
             raise ImportError("edge-tts not installed. Run: pip install edge-tts") from exc
 
         voice = self._resolve_voice(language=language, speaker=speaker)
-        if progress_cb:
-            progress_cb(f"Synthesizing with Edge-TTS ({voice})...", 40)
 
         # Convert speed multiplier to Edge-TTS rate string (e.g. 1.5 → "+50%")
         rate_pct = int((speed - 1.0) * 100)
         rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
 
+        # Synthesize in sentence-sized chunks so cancellation is responsive and
+        # progress reflects real work — a single whole-document save() blocks for
+        # minutes and only checks should_cancel before/after (i.e. never mid-run).
+        chunks = TextProcessor.split_for_tts(text)
+        if not chunks:
+            raise RuntimeError("No text to synthesize with Edge-TTS.")
+        n = len(chunks)
+        tmp_mp3 = f"{output_path}.edge.mp3"
+
+        def _cancelled() -> bool:
+            return bool(should_cancel and should_cancel())
+
         async def _run():
-            tmp_mp3 = f"{output_path}.edge.mp3"
-            try:
-                comm = edge_tts.Communicate(TextProcessor.normalize(text), voice=voice, rate=rate_str)
-                await comm.save(tmp_mp3)
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", tmp_mp3,
-                    "-ac", "1", "-ar", "24000", output_path,
-                ]
-                subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            finally:
-                if os.path.exists(tmp_mp3):
-                    os.remove(tmp_mp3)
+            with open(tmp_mp3, "wb") as mp3:
+                for i, chunk in enumerate(chunks):
+                    if _cancelled():
+                        raise CancelledError("Job cancelled")
+                    if progress_cb:
+                        progress_cb(f"Chunk {i + 1}/{n}...", int(i / n * 90))
+                    comm = edge_tts.Communicate(chunk, voice=voice, rate=rate_str)
+                    async for part in comm.stream():
+                        # Check between streamed packets for near-instant cancel.
+                        if _cancelled():
+                            raise CancelledError("Job cancelled")
+                        if part.get("type") == "audio" and part.get("data"):
+                            mp3.write(part["data"])
 
         try:
             asyncio.run(_run())
+            if _cancelled():
+                raise CancelledError("Job cancelled")
+            if progress_cb:
+                progress_cb("Converting audio...", 92)
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", tmp_mp3,
+                "-ac", "1", "-ar", "24000", output_path,
+            ]
+            returncode, _out, _err = _run_subprocess(ffmpeg_cmd, should_cancel=should_cancel)
+            if returncode != 0:
+                raise RuntimeError("ffmpeg failed during Edge-TTS WAV conversion.")
         except FileNotFoundError as exc:
             raise RuntimeError("ffmpeg is required for Edge-TTS WAV conversion. Install ffmpeg or use another backend.") from exc
+        finally:
+            if os.path.exists(tmp_mp3):
+                os.remove(tmp_mp3)
+
         if progress_cb:
             progress_cb("Done.", 100)
         return output_path, 24000
@@ -331,8 +559,12 @@ class PiperBackend(BaseBackend):
                     "or download a binary from https://github.com/rhasspy/piper/releases."
                 ) from exc
 
-        model_path = os.getenv("PIPER_MODEL") or (
-            PIPER_DEFAULT_MODEL if os.path.exists(PIPER_DEFAULT_MODEL) else None
+        configured_model = os.getenv("PIPER_MODEL", "").strip()
+        if configured_model and not os.path.isabs(configured_model):
+            configured_model = os.path.join(PROJECT_DIR, configured_model)
+        model_path = configured_model or next(
+            (path for path in PIPER_DEFAULT_MODELS if os.path.exists(path)),
+            None,
         )
         if not model_path:
             raise RuntimeError(
@@ -342,11 +574,15 @@ class PiperBackend(BaseBackend):
             )
         if not os.path.exists(model_path):
             raise RuntimeError(f"PIPER_MODEL file does not exist: {model_path}")
-        config_path = os.getenv("PIPER_CONFIG")
+        config_path = os.getenv("PIPER_CONFIG", "").strip()
+        if config_path and not os.path.isabs(config_path):
+            config_path = os.path.join(PROJECT_DIR, config_path)
         if not config_path:
             candidate = f"{model_path}.json"
             if os.path.exists(candidate):
                 config_path = candidate
+        if config_path and not os.path.exists(config_path):
+            raise RuntimeError(f"PIPER_CONFIG file does not exist: {config_path}")
         self.model_path = model_path
         self.config_path = config_path
         self.use_cuda = _is_cuda_device(device)
@@ -372,7 +608,7 @@ class PiperBackend(BaseBackend):
     def is_loaded(self) -> bool:
         return self._loaded
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
         if progress_cb:
             progress_cb("Generating...", 40)
         cmd = list(self._invoke) + ["-m", self.model_path, "-f", output_path]
@@ -380,20 +616,20 @@ class PiperBackend(BaseBackend):
             cmd += ["-c", self.config_path]
         if self.use_cuda:
             cmd += ["--cuda"]
+        if speed != 1.0:
+            cmd += ["--length-scale", str(1.0 / speed)]
         extra_args = os.getenv("PIPER_ARGS", "").strip()
         if extra_args:
             cmd += shlex.split(extra_args)
 
-        try:
-            subprocess.run(
-                cmd,
-                input=text.encode("utf-8"),
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-            raise RuntimeError(f"Piper failed: {stderr.strip() or exc}") from exc
+        returncode, _out, err = _run_subprocess(
+            cmd,
+            input_bytes=text.encode("utf-8"),
+            should_cancel=should_cancel,
+        )
+        if returncode != 0:
+            stderr = err.decode("utf-8", errors="replace") if err else ""
+            raise RuntimeError(f"Piper failed: {stderr.strip() or f'exit code {returncode}'}")
 
         if progress_cb:
             progress_cb("Done.", 100)
@@ -405,6 +641,7 @@ class CoquiBackend(BaseBackend):
 
     def __init__(self):
         self.tts = None
+        self.model_name = None
 
     def load_model(self, device: str = "cuda:0", progress_cb=None):
         try:
@@ -416,28 +653,78 @@ class CoquiBackend(BaseBackend):
             ) from exc
         if progress_cb:
             progress_cb("Loading model...", 0)
-        model_name = os.getenv("COQUI_MODEL", "tts_models/en/ljspeech/tacotron2-DDC")
+        model_name = os.getenv("COQUI_MODEL", COQUI_DEFAULT_MODEL)
+        # Auto-accept the Coqui model license (required for XTTS) so loading
+        # does not block on an interactive prompt.
+        os.environ.setdefault("COQUI_TOS_AGREED", "1")
         _require_torch_cuda(device, "Coqui")
-        use_cuda = _is_cuda_device(device)
-        self.tts = CoquiTTS(model_name=model_name, gpu=use_cuda)
+        self.tts = CoquiTTS(model_name=model_name)
+        if _is_cuda_device(device):
+            try:
+                self.tts.to(device)
+            except Exception as exc:  # fall back to CPU if the move fails
+                print(f"[CoquiBackend] could not move model to {device}: {exc}")
+        self.model_name = model_name
         if progress_cb:
             progress_cb("Model ready.", 100)
 
     def is_loaded(self) -> bool:
         return self.tts is not None
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
-        if progress_cb:
-            progress_cb("Generating...", 40)
-        kwargs = {}
-        if hasattr(self.tts, "speakers") and speaker in (self.tts.speakers or []):
-            kwargs["speaker"] = speaker
-        if hasattr(self.tts, "languages") and language in (self.tts.languages or []):
-            kwargs["language"] = language
-        self.tts.tts_to_file(text=text, file_path=output_path, **kwargs)
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
+        if should_cancel and should_cancel():
+            raise CancelledError("Job cancelled")
+
+        kwargs: dict = {}
+
+        # Multi-speaker models (e.g. XTTS) require a valid speaker; the Qwen/Edge
+        # names ("Ryan", "pt-BR-...") mean nothing here, so pick a real one.
+        speakers = list(getattr(self.tts, "speakers", None) or [])
+        if speakers:
+            if speaker and speaker in speakers:
+                kwargs["speaker"] = speaker
+            else:
+                default_speaker = next(
+                    (s for s in COQUI_XTTS_SPEAKERS if s in speakers),
+                    speakers[0],
+                )
+                kwargs["speaker"] = default_speaker
+
+        # Multilingual models (e.g. XTTS) require a 2-letter language code.
+        code = None
+        languages = list(getattr(self.tts, "languages", None) or [])
+        if languages:
+            code = COQUI_LANG_CODES.get(language, language)
+            if code not in languages:
+                code = "pt" if "pt" in languages else languages[0]
+            kwargs["language"] = code
+
+        # XTTS enforces a per-language character limit and truncates/raises past
+        # it. Split into chunks under that limit so long blocks synthesize fully
+        # and cancellation/progress stay responsive.
+        limit = COQUI_CHAR_LIMITS.get(code or COQUI_LANG_CODES.get(language, ""), 200)
+        chunks = TextProcessor.split_for_tts(text, max_chars=max(80, limit - 3))
+        if not chunks:
+            raise RuntimeError("No text to synthesize with Coqui TTS.")
+        n = len(chunks)
+
+        sample_rate = getattr(
+            getattr(self.tts, "synthesizer", None), "output_sample_rate", 24000
+        )
+        all_wavs: list[np.ndarray] = []
+        for i, chunk in enumerate(chunks):
+            if should_cancel and should_cancel():
+                raise CancelledError("Job cancelled")
+            if progress_cb:
+                progress_cb(f"Chunk {i + 1}/{n}...", int(i / n * 90))
+            wav = self.tts.tts(text=chunk, **kwargs)
+            all_wavs.append(np.asarray(wav, dtype=np.float32))
+
+        audio = np.concatenate(all_wavs) if len(all_wavs) > 1 else all_wavs[0]
+        sf.write(output_path, audio, int(sample_rate))
         if progress_cb:
             progress_cb("Done.", 100)
-        return output_path, 0
+        return output_path, int(sample_rate)
 
 
 class GeminiBackend(BaseBackend):
@@ -498,7 +785,7 @@ class GeminiBackend(BaseBackend):
         )
         return header + audio_data
 
-    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0):
+    def generate(self, text: str, language: str, speaker: str, output_path: str, progress_cb=None, speed: float = 1.0, should_cancel=None):
         try:
             from google import genai
             from google.genai import types  # type: ignore
@@ -514,13 +801,14 @@ class GeminiBackend(BaseBackend):
 
         client = genai.Client(api_key=api_key)
         model = "gemini-3.1-flash-tts-preview"
+        voice_name = speaker if speaker in GEMINI_VOICES else "Zephyr"
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=text)])]
         config = types.GenerateContentConfig(
             temperature=1,
             response_modalities=["audio"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
                 )
             ),
         )
@@ -531,6 +819,8 @@ class GeminiBackend(BaseBackend):
         audio_chunks: list[bytes] = []
         mime_type = "audio/L16;rate=24000"
         for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
+            if should_cancel and should_cancel():
+                raise CancelledError("Job cancelled")
             if not chunk.parts:
                 continue
             part = chunk.parts[0]
@@ -605,6 +895,7 @@ class TTSEngine:
         progress_cb=None,
         normalize_text: bool = True,
         speed: float = 1.0,
+        should_cancel=None,
     ) -> tuple[str, int]:
         """Generate speech and write to *output_path*.
 
@@ -632,4 +923,5 @@ class TTSEngine:
                 output_path=output_path,
                 progress_cb=progress_cb,
                 speed=speed,
+                should_cancel=should_cancel,
             )

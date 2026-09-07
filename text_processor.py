@@ -23,6 +23,39 @@ class TextProcessor:
         return [TextProcessor.normalize(b) for b in blocks if TextProcessor.normalize(b)]
 
     @staticmethod
+    def _hard_split(fragment: str, max_chars: int) -> list[str]:
+        """Guarantee no piece exceeds max_chars, splitting on words then chars.
+
+        Used as a last resort for clauses that have no sentence/comma break
+        points (e.g. long formulas or comma-less prose) so the TTS model never
+        receives text past its per-language character limit.
+        """
+        fragment = fragment.strip()
+        if len(fragment) <= max_chars:
+            return [fragment] if fragment else []
+
+        pieces: list[str] = []
+        buf = ""
+        for word in fragment.split():
+            # A single word longer than the limit must be sliced by characters.
+            while len(word) > max_chars:
+                if buf:
+                    pieces.append(buf)
+                    buf = ""
+                pieces.append(word[:max_chars])
+                word = word[max_chars:]
+            if not buf:
+                buf = word
+            elif len(buf) + 1 + len(word) <= max_chars:
+                buf = f"{buf} {word}"
+            else:
+                pieces.append(buf)
+                buf = word
+        if buf:
+            pieces.append(buf)
+        return pieces
+
+    @staticmethod
     def split_for_tts(text: str, max_chars: int = 500) -> list[str]:
         sentences = TextProcessor.split_sentences(text)
         if not sentences:
@@ -48,10 +81,18 @@ class TextProcessor:
             for p in parts:
                 if len(sub) + len(p) + 1 <= max_chars:
                     sub = (sub + " " + p).strip()
-                else:
-                    if sub:
-                        chunks.append(sub)
+                    continue
+                if sub:
+                    chunks.append(sub)
+                    sub = ""
+                # A comma-clause may still be longer than the limit; slice it
+                # by words/characters so no chunk ever exceeds max_chars.
+                if len(p) <= max_chars:
                     sub = p
+                else:
+                    hard = TextProcessor._hard_split(p, max_chars)
+                    chunks.extend(hard[:-1])
+                    sub = hard[-1] if hard else ""
             if sub:
                 current = sub
 

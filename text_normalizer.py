@@ -139,9 +139,23 @@ _SYMBOLS_PT = [
     (r"%", " por cento"),
     (r"\+", " mais "),
     (r"=", " igual a "),
+    (r"<", " menor que "),
+    (r">", " maior que "),
+    (r"×", " vezes "),
+    (r"÷", " dividido por "),
     (r"/", " barra "),
+    (r"\\", " barra invertida "),
     (r"§", " parágrafo "),
     (r"°", " graus"),
+    (r"©", " copyright "),
+    (r"®", " marca registrada "),
+    (r"™", " marca registrada "),
+    # Marcadores de lista viram pausa (mantém a separação entre itens).
+    (r"[•·▪◦●‣∙]", ", "),
+    # Ruído de marcação/símbolos sem leitura útil.
+    (r"[*#~^|_]", " "),
+    # Dois-pontos em prosa (ex.: "Nota: ...") vira pausa; nunca é vocalizado.
+    (r"[ \t]*:[ \t]*", ", "),
 ]
 
 _SYMBOLS_EN = [
@@ -150,9 +164,20 @@ _SYMBOLS_EN = [
     (r"%", " percent"),
     (r"\+", " plus "),
     (r"=", " equals "),
+    (r"<", " less than "),
+    (r">", " greater than "),
+    (r"×", " times "),
+    (r"÷", " divided by "),
     (r"/", " slash "),
+    (r"\\", " backslash "),
     (r"§", " section "),
     (r"°", " degrees"),
+    (r"©", " copyright "),
+    (r"®", " registered trademark "),
+    (r"™", " trademark "),
+    (r"[•·▪◦●‣∙]", ", "),
+    (r"[*#~^|_]", " "),
+    (r"[ \t]*:[ \t]*", ", "),
 ]
 
 
@@ -161,6 +186,86 @@ def _apply_symbols(text: str, language_key: str) -> str:
     for pat, repl in table:
         text = re.sub(pat, repl, text)
     return text
+
+
+def _expand_operators(text: str, language_key: str) -> str:
+    """Read symbols sitting between numbers as words (ratios, math in prose).
+
+    Runs after time/date expansion but before number expansion, so ``3:2``
+    becomes "três para dois" while ``10:30`` was already handled as a time.
+    """
+    is_pt = language_key.startswith("pt")
+    words = {
+        "ratio":   " para "           if is_pt else " to ",
+        "times":   " vezes "          if is_pt else " times ",
+        "divide":  " dividido por "   if is_pt else " divided by ",
+        "less":    " menor que "      if is_pt else " less than ",
+        "greater": " maior que "      if is_pt else " greater than ",
+        "approx":  "aproximadamente " if is_pt else "approximately ",
+        "number":  "número "          if is_pt else "number ",
+    }
+    text = re.sub(r"(?<=\d)\s*:\s*(?=\d)", words["ratio"], text)
+    text = re.sub(r"(?<=\d)\s*[*×]\s*(?=\d)", words["times"], text)
+    text = re.sub(r"(?<=\d)\s*÷\s*(?=\d)", words["divide"], text)
+    text = re.sub(r"(?<=\d)\s*<\s*(?=\d)", words["less"], text)
+    text = re.sub(r"(?<=\d)\s*>\s*(?=\d)", words["greater"], text)
+    text = re.sub(r"~\s*(?=\d)", words["approx"], text)
+    text = re.sub(r"#\s*(?=\d)", words["number"], text)
+    return text
+
+
+_GREEK_PT = {
+    "α": "alfa", "β": "beta", "γ": "gama", "δ": "delta", "ε": "épsilon",
+    "θ": "teta", "λ": "lambda", "μ": "mi", "π": "pi", "σ": "sigma",
+    "φ": "fi", "ω": "ômega", "Γ": "gama maiúsculo", "Δ": "delta",
+    "Σ": "somatório", "Ω": "ômega maiúsculo",
+}
+_GREEK_EN = {
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon",
+    "θ": "theta", "λ": "lambda", "μ": "mu", "π": "pi", "σ": "sigma",
+    "φ": "phi", "ω": "omega", "Γ": "capital gamma", "Δ": "delta",
+    "Σ": "summation", "Ω": "capital omega",
+}
+_SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ", "0123456789+-=()aehijklmnoprstuvx")
+
+
+def _speak_math(text: str, language_key: str) -> str:
+    """Convert common mathematical notation while leaving prose untouched."""
+    is_pt = language_key.startswith("pt")
+    greek = _GREEK_PT if is_pt else _GREEK_EN
+    labels = {
+        "subscript": "subscrito" if is_pt else "subscript",
+        "superscript": "elevado a" if is_pt else "to the power of",
+        "sum": "somatório de" if is_pt else "sum of",
+        "product": "produtório de" if is_pt else "product of",
+        "sqrt": "raiz quadrada de" if is_pt else "square root of",
+        "gradient": "gradiente de" if is_pt else "gradient of",
+        "minus": "menos" if is_pt else "minus",
+        "times": "vezes" if is_pt else "times",
+        "divide": "dividido por" if is_pt else "divided by",
+    }
+
+    def equation_repl(match: re.Match) -> str:
+        equation = re.sub(
+            r"([A-Za-z])([₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ]+)",
+            lambda subscript: (
+                f"{subscript.group(1)} {labels['subscript']} "
+                f"{subscript.group(2).translate(_SUBSCRIPTS)}"
+            ),
+            match.group(0),
+        )
+        equation = equation.translate(_SUBSCRIPTS)
+        equation = re.sub(r"([A-Za-z])_\{?([A-Za-z0-9]+)\}?", rf"\1 {labels['subscript']} \2", equation)
+        equation = re.sub(r"([A-Za-z0-9)])\^\{?([A-Za-z0-9+\-]+)\}?", rf"\1 {labels['superscript']} \2", equation)
+        for symbol, spoken in greek.items():
+            equation = equation.replace(symbol, f" {spoken} ")
+        equation = equation.replace("∑", f" {labels['sum']} ").replace("∏", f" {labels['product']} ")
+        equation = equation.replace("√", f" {labels['sqrt']} ").replace("∇", f" {labels['gradient']} ")
+        equation = equation.replace("×", f" {labels['times']} ").replace("÷", f" {labels['divide']} ")
+        equation = re.sub(r"(?<!\w)-(?!\w)", f" {labels['minus']} ", equation)
+        return equation
+
+    return re.sub(r"(?m)^.*(?:[=∑∏√∇]|[A-Za-z]\^|[A-Za-z]_[{A-Za-z0-9]).*$", equation_repl, text)
 
 
 # ── Numbers / currencies / times / dates ─────────────────────────────────────
@@ -313,9 +418,16 @@ def _expand_numbers(text: str, language_key: str) -> str:
 
 # ── Final cleanup ────────────────────────────────────────────────────────────
 
-# Remove characters that some TTS pipelines stumble over while keeping basic
-# punctuation that influences prosody.
-_KEEP_PUNCT = set(".,;:!?…\"'()-—\n")
+# Punctuation that influences prosody and is safe to keep. Everything else that
+# is not a letter, digit or whitespace is dropped by _strip_specials, so no
+# stray symbol or emoji ever reaches the TTS backend.
+_KEEP_PUNCT = ".,;:!?\"'()-—–\n"
+_STRIP_SPECIALS_RE = re.compile(r"[^\w\s" + re.escape(".,;:!?\"'()-—–") + "]", re.UNICODE)
+
+
+def _strip_specials(text: str) -> str:
+    """Drop leftover symbols/emoji the earlier passes didn't turn into words."""
+    return _STRIP_SPECIALS_RE.sub(" ", text)
 
 
 def _strip_weird(text: str) -> str:
@@ -337,14 +449,19 @@ def normalize(text: str, language: str = "English") -> str:
         return text or ""
 
     lang_key = _lang_key(language)
-    t = _strip_weird(text)
+    t = _speak_math(text, lang_key)
+    t = _strip_weird(t)
     t = reflow(t)
+    t = re.sub(r"(?<!\w)\[(?:\d+(?:\s*[,;–-]\s*\d+)*)\]", "", t)
     t = _apply_abbrev(t, lang_key)
     t = _expand_currency(t, lang_key)
     t = _expand_date(t, lang_key)
     t = _expand_time(t, lang_key)
+    t = _expand_operators(t, lang_key)
     t = _expand_numbers(t, lang_key)
     t = _apply_symbols(t, lang_key)
+    # Remove qualquer caractere especial remanescente (emoji, box-drawing, etc.).
+    t = _strip_specials(t)
     # Final whitespace tidy
     t = _MULTI_SPACE_RE.sub(" ", t)
     t = re.sub(r" *\n *", "\n", t)
