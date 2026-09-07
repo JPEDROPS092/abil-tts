@@ -8,6 +8,15 @@
           <span v-if="slotProps.message.detail">{{ slotProps.message.detail }}</span>
         </div>
       </div>
+
+      <Dialog v-model:visible="llmTestDialog" modal header="Teste LLM: Fale sobre a fruta Abil" :style="{ width: '560px' }">
+        <div class="fg">
+          <div style="white-space:pre-wrap;">{{ llmTestOutput }}</div>
+        </div>
+        <template #footer>
+          <Button label="Fechar" severity="secondary" text @click="llmTestDialog = false" />
+        </template>
+      </Dialog>
     </template>
   </Toast>
 
@@ -118,6 +127,20 @@
         />
         <div class="tb-sep"></div>
         <Button icon="pi pi-clipboard" label="Colar" size="small" severity="secondary" text @click="pasteClipboard" />
+        <!-- Seletor e teste rápido de LLM no editor -->
+        <div class="editor-llm-inline" style="display:flex;align-items:center;gap:8px;margin-left:8px;">
+          <Dropdown
+            v-model="editorLLMModel"
+            :options="llmModelOptions"
+            option-label="id"
+            option-value="id"
+            placeholder="Modelo LLM"
+            style="min-width:180px"
+          />
+          <Button class="llm-test-btn" severity="secondary" outlined size="small" @click="quickTestLLM">
+            <img src="/abil.svg" alt="abil" style="width:18px;height:18px;margin-right:6px;vertical-align:middle;" /> Testar LLM
+          </Button>
+        </div>
         <Button icon="pi pi-times" label="Limpar" size="small" severity="danger" text @click="clearText" :disabled="!text.trim()" />
         <div class="tb-sep"></div>
         <Button
@@ -1409,6 +1432,44 @@ const chatMessages = ref([]);
 const chatInput = ref('');
 const chatStreaming = ref(false);
 const chatContainer = ref(null);
+
+// Editor LLM quick test state
+const editorLLMModel = ref('');
+const llmTestOutput = ref('');
+const llmTestDialog = ref(false);
+
+watch(llmModelOptions, (v) => {
+  if (!editorLLMModel.value && v.length) editorLLMModel.value = v[0].id || v[0];
+});
+
+watch(editorLLMModel, async (val, oldVal) => {
+  if (!val || val === oldVal) return;
+  try {
+    // Update server-side LLM config with new model selection
+    llmConfig.model = val;
+    await saveLLMConfig();
+    notify('Modelo LLM selecionado', val, 'success');
+  } catch (e) {
+    notify('Falha ao selecionar modelo', e.message || String(e), 'error');
+  }
+});
+
+async function quickTestLLM() {
+  // Prompt fixed as requested
+  const prompt = 'Fale sobre a fruta Abil.';
+  try {
+    const res = await api('/api/llm/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: prompt }),
+    });
+    llmTestOutput.value = res.text || JSON.stringify(res);
+    llmTestDialog.value = true;
+    notify('Resposta recebida', '', 'success');
+  } catch (e) {
+    notify('Erro no teste LLM', e.message || String(e), 'error');
+  }
+}
 
 // ── Document viewer state ──────────────────────────────────────────────────
 const docFollowTTS = ref(true);
