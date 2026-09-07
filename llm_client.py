@@ -34,6 +34,12 @@ _EXPLAIN_SYSTEM = (
     "Respond in the same language as the document."
 )
 
+_TRANSLATE_SYSTEM = (
+    "You translate technical documents accurately. Preserve formulas, LaTeX, code, "
+    "citations, names, and units exactly. Translate only natural-language prose and "
+    "return only the translated document with no commentary."
+)
+
 _CHAT_SYSTEM = (
     "You are an intelligent document assistant. "
     "Help the user understand, summarize, and explore the provided document. "
@@ -94,6 +100,13 @@ class LLMClient:
     def explain(self, text: str) -> str:
         """Explain the content in simple terms."""
         return self._complete(_EXPLAIN_SYSTEM, text)
+
+    def translate(self, text: str, target_language: str) -> str:
+        """Translate prose while preserving technical notation."""
+        return self._complete(
+            _TRANSLATE_SYSTEM,
+            f"Translate the following document to {target_language}:\n\n{text}",
+        )
 
     def test_connection(self) -> bool:
         """Verify the API is reachable. Returns True on success."""

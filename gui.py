@@ -313,7 +313,7 @@ class AbilApp(tk.Tk):
 
     def _on_backend_change(self):
         self._refresh_voice_settings()
-        if self.backend_var.get() == "edge":
+        if self._get_backend_key() == "edge":
             self.speaker_combo.configure(values=EDGE_VOICES)
             if self.speaker_var.get() not in EDGE_VOICES:
                 self.speaker_var.set("pt-BR-AntonioNeural")
